@@ -1,0 +1,286 @@
+# Training Example CPU - Customizable Parameters Guide
+
+## 1. **数据配置 (Data Configuration)**
+
+### 基础数据设置
+```python
+# 可自定义的数据路径和文件
+data_path = "data/v12_glycan_binding.csv"  # 🔧 您的数据文件路径
+vocab_path = "GlycanEmbedder_Package/glycoword_vocab.pkl"  # 🔧 词汇表路径
+cache_dir = "cpu_embedding_cache"  # 🔧 缓存目录名称
+```
+
+### 数据划分设置
+```python
+# create_glycan_dataloaders() 中的参数
+test_size=0.1,     # 🔧 测试集比例 (0.1 = 10%)
+val_size=0.1,      # 🔧 验证集比例 (0.1 = 10%)
+max_pairs=300      # 🔧 最大样本对数量 (None = 使用全部数据)
+```
+
+### 数据列配置
+```python
+# GlycanProteinDataLoader 初始化中可自定义
+protein_col='target',     # 🔧 蛋白质ID列名
+sequence_col='target',    # 🔧 蛋白质序列列名
+exclude_cols=None         # 🔧 要排除的列名列表
+```
+
+## 2. **模型配置 (Model Configuration)**
+
+### Embedder配置
+```python
+embedder = GlycanProteinPairEmbedder(
+    protein_model="650M",                                    # 🔧 "650M" 或 "3B"
+    protein_model_dir="resources/esm-model-weights",         # 🔧 模型权重目录
+    glycan_method="lstm",                                    # 🔧 糖链嵌入方法
+    glycan_vocab_path=vocab_path,                           # 🔧 糖链词汇表路径
+    fusion_method="concat",                                  # 🔧 融合方法
+    device=device                                           # 🔧 设备设置
+)
+```
+
+#### 🔧 **Glycan Method 选项：**
+- `"gcn"` - Graph Convolutional Network
+- `"lstm"` - Long Short-Term Memory
+- `"bert"` - BERT-like Transformer
+- `"cnn"` - Convolutional Neural Network
+- `"rgcn"` - Relational Graph Convolutional Network
+- `"gat"` - Graph Attention Network
+- `"gin"` - Graph Isomorphism Network
+
+#### 🔧 **Fusion Method 选项：**
+- `"concat"` - 简单拼接
+- `"attention"` - 注意力机制融合
+
+### 神经网络配置
+```python
+predictor = PyTorchBindingPredictor(
+    embedder=embedder,
+    network_type="mlp",                    # 🔧 网络类型
+    network_config={                       # 🔧 网络配置字典
+        "hidden_dims": [1024, 512, 256, 128],  # 🔧 隐藏层维度
+        "dropout": 0.3,                         # 🔧 Dropout比例
+        "activation": "relu",                   # 🔧 激活函数
+        "batch_norm": True                      # 🔧 是否使用BatchNorm
+    },
+    device=device
+)
+```
+
+#### 🔧 **Network Type 选项：**
+- `"mlp"` - Multi-Layer Perceptron
+- `"resnet"` - Residual Network
+- `"attention"` - Attention-based Network
+- 其他 binding_strength_networks 中定义的类型
+
+#### 🔧 **Network Config 可选参数：**
+```python
+network_config = {
+    "hidden_dims": [512, 256, 128, 64],        # 🔧 隐藏层尺寸列表
+    "dropout": 0.2,                            # 🔧 0.0-1.0
+    "activation": "gelu",                      # 🔧 "relu", "gelu", "tanh", "sigmoid"
+    "batch_norm": False,                       # 🔧 True/False
+    "layer_norm": True,                        # 🔧 True/False (如果支持)
+    "residual_connections": True,              # 🔧 True/False (如果支持)
+    "num_heads": 8,                           # 🔧 注意力头数 (attention网络)
+    "num_layers": 4                           # 🔧 层数 (部分网络类型)
+}
+```
+
+## 3. **训练配置 (Training Configuration)**
+
+### 基础训练参数
+```python
+history = predictor.train(
+    dataloaders=dataloaders,
+    num_epochs=50,              # 🔧 训练轮数
+    learning_rate=2e-3,         # 🔧 学习率 (1e-4 到 1e-2)
+    weight_decay=1e-4,          # 🔧 权重衰减 (0 到 1e-3)
+    patience=15                 # 🔧 早停耐心值
+)
+```
+
+### 优化器和调度器 (在PyTorchBindingPredictor.train()中)
+```python
+# 可以修改优化器类型
+self.optimizer = optim.AdamW(        # 🔧 可改为 SGD, Adam, RMSprop等
+    self.model.parameters(),
+    lr=learning_rate,
+    weight_decay=weight_decay,
+    betas=(0.9, 0.999),              # 🔧 AdamW的beta参数
+    eps=1e-8                         # 🔧 数值稳定性参数
+)
+
+# 可以修改学习率调度器
+self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    self.optimizer,
+    patience=patience // 2,          # 🔧 调度器耐心值
+    factor=0.5,                      # 🔧 学习率衰减因子
+    verbose=True,                    # 🔧 是否打印信息
+    min_lr=1e-6                      # 🔧 最小学习率
+)
+```
+
+### 损失函数
+```python
+# 在 PyTorchBindingPredictor.__init__() 中
+self.criterion = nn.MSELoss()        # 🔧 可改为 L1Loss, SmoothL1Loss, HuberLoss等
+```
+
+## 4. **性能和资源配置 (Performance Configuration)**
+
+### DataLoader设置
+```python
+batch_size = 32                      # 🔧 批次大小 (8, 16, 32, 64, 128...)
+embedding_batch_size = 16            # 🔧 嵌入计算批次大小
+num_workers = 0                      # 🔧 数据加载进程数 (通常0-4)
+```
+
+### 设备配置
+```python
+device = "cuda" if torch.cuda.is_available() else "cpu"  # 🔧 可强制指定 "cpu" 或 "cuda:0"
+```
+
+### 内存管理
+```python
+# 在 DataLoader 创建中
+pin_memory=(self.device != "cpu")    # 🔧 是否使用pin_memory加速CPU->GPU传输
+```
+
+## 5. **高级Embedder配置**
+
+### 自定义Glycan Embedder参数
+```python
+embedder = GlycanProteinPairEmbedder(
+    # ... 基础参数 ...
+    glycan_hidden_dims=[512, 256, 1280],     # 🔧 糖链嵌入器隐藏层
+    glycan_readout="mean",                   # 🔧 "mean", "max", "sum", "dual"
+    glycan_custom_params={                   # 🔧 自定义参数字典
+        'short_cut': True,                   # 🔧 是否使用残差连接
+        'batch_norm': True,                  # 🔧 是否使用批归一化
+        'activation': 'relu',                # 🔧 激活函数
+        'dropout': 0.1,                      # 🔧 Dropout比例
+        'num_heads': 8,                      # 🔧 注意力头数(BERT/GAT)
+        'num_layers': 6,                     # 🔧 层数
+        'bidirectional': True,               # 🔧 双向LSTM
+        'kernel_size': 3,                    # 🔧 CNN卷积核大小
+        'eps': 0.1,                          # 🔧 GIN的eps参数
+        'learn_eps': True                    # 🔧 是否学习eps
+    }
+)
+```
+
+## 6. **输出和可视化配置**
+
+### 日志级别
+```python
+logging.basicConfig(level=logging.INFO)     # 🔧 DEBUG, INFO, WARNING, ERROR
+```
+
+### 进度条和输出
+```python
+# 在训练循环中可自定义输出频率
+if epoch % 5 == 0 or epoch == num_epochs - 1:    # 🔧 每5轮输出一次 (可调整)
+    logger.info(...)
+```
+
+### 图表保存
+```python
+plt.savefig("cpu_pytorch_pipeline_results.png",  # 🔧 保存文件名
+           dpi=300,                               # 🔧 图像分辨率
+           bbox_inches='tight')                   # 🔧 边框设置
+```
+
+## 7. **数据预处理配置**
+
+### 数据标准化
+```python
+normalize_targets=True                       # 🔧 是否标准化目标值
+```
+
+### 数据采样
+```python
+# 在 create_pairs_dataset 中
+random_state=42                              # 🔧 随机种子
+```
+
+## 8. **完整自定义示例**
+
+```python
+def run_custom_pipeline():
+    """自定义配置的完整示例"""
+
+    # 🔧 自定义所有主要参数
+    CONFIG = {
+        # 数据配置
+        'data_path': "data/my_custom_data.csv",
+        'vocab_path': "my_custom_vocab.pkl",
+        'test_size': 0.15,
+        'val_size': 0.15,
+        'max_pairs': 1000,
+
+        # 模型配置
+        'protein_model': "3B",
+        'glycan_method': "bert",
+        'fusion_method': "attention",
+        'network_type': "resnet",
+        'hidden_dims': [2048, 1024, 512, 256],
+
+        # 训练配置
+        'batch_size': 64,
+        'num_epochs': 100,
+        'learning_rate': 1e-3,
+        'weight_decay': 1e-5,
+        'patience': 20,
+
+        # 性能配置
+        'device': "cuda:0",
+        'num_workers': 2,
+        'cache_dir': "custom_cache"
+    }
+
+    # 使用自定义配置...
+    embedder = GlycanProteinPairEmbedder(
+        protein_model=CONFIG['protein_model'],
+        glycan_method=CONFIG['glycan_method'],
+        fusion_method=CONFIG['fusion_method'],
+        # ... 其他参数
+    )
+
+    # ... 继续自定义流程
+```
+
+## 9. **常用自定义组合推荐**
+
+### 快速原型 (Fast Prototyping)
+```python
+small_config = {
+    'max_pairs': 500,
+    'batch_size': 16,
+    'num_epochs': 20,
+    'hidden_dims': [256, 128, 64]
+}
+```
+
+### 高性能训练 (High Performance)
+```python
+performance_config = {
+    'protein_model': "3B",
+    'glycan_method': "bert",
+    'fusion_method': "attention",
+    'batch_size': 128,
+    'hidden_dims': [2048, 1024, 512, 256, 128],
+    'num_epochs': 200
+}
+```
+
+### 内存受限 (Memory Limited)
+```python
+memory_safe_config = {
+    'batch_size': 8,
+    'embedding_batch_size': 4,
+    'hidden_dims': [512, 256, 128],
+    'protein_model': "650M"
+}
+```

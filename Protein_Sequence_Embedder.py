@@ -1,5 +1,6 @@
 """
 Protein Sequence Embedder using ESM-2 models
+MEMORY OPTIMIZED VERSION - Prevents GPU memory accumulation
 """
 import os
 import torch
@@ -39,7 +40,8 @@ class ProteinEmbedder(ABC):
 
 
 class ESM2Embedder(ProteinEmbedder):
-    """ESM-2 model embedder for protein sequences"""
+    """ESM-2 model embedder for protein sequences
+    MEMORY OPTIMIZED VERSION - Prevents GPU memory accumulation during embedding"""
 
     MODELS = {
         "esm2_t33_650M_UR50D": {
@@ -235,6 +237,7 @@ class ESM2Embedder(ProteinEmbedder):
     def embed(self, sequences: Union[str, List[str]]) -> np.ndarray:
         """
         Embed protein sequences
+        MEMORY OPTIMIZED VERSION - Prevents GPU memory accumulation
 
         Args:
             sequences: Single sequence or list of sequences
@@ -246,7 +249,7 @@ class ESM2Embedder(ProteinEmbedder):
             sequences = [sequences]
 
         # Clean sequences to remove unrecognized characters
-        logger.info(f"Cleaning {len(sequences)} sequences...")
+        logger.debug(f"Cleaning {len(sequences)} sequences...")
         cleaned_sequences = self._clean_sequences(sequences)
 
         # Prepare batch
@@ -254,11 +257,17 @@ class ESM2Embedder(ProteinEmbedder):
         batch_labels, batch_strs, batch_tokens = self.batch_converter(data)
         batch_tokens = batch_tokens.to(self.device)
 
-        # Get embeddings
+        # Get embeddings with memory optimization
         with torch.no_grad():
+            # 🔧 MEMORY FIX 1: ESM模型计算
             results = self.model(batch_tokens, repr_layers=[self.repr_layer],
                                return_contacts=False)
             embeddings = results["representations"][self.repr_layer]
+
+            # 🔧 MEMORY FIX 2: 立即清理results以释放GPU内存
+            del results
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             # Average over sequence length (excluding special tokens)
             sequence_embeddings = []
@@ -271,7 +280,23 @@ class ESM2Embedder(ProteinEmbedder):
 
             embeddings_tensor = torch.stack(sequence_embeddings)
 
-        return embeddings_tensor.cpu().numpy()
+            # 🔧 MEMORY FIX 3: 清理中间变量
+            del embeddings, sequence_embeddings
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # 🔧 MEMORY FIX 4: 立即转换为CPU numpy并清理GPU tensor
+            result_numpy = embeddings_tensor.cpu().numpy()
+            del embeddings_tensor
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # 🔧 MEMORY FIX 5: 清理batch tokens
+        del batch_tokens
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        return result_numpy
 
 
 class ProteinEmbedderFactory:
@@ -322,6 +347,7 @@ def embed_proteins(sequences: Union[str, List[str]],
                   **kwargs) -> np.ndarray:
     """
     Convenience function to embed protein sequences
+    MEMORY OPTIMIZED VERSION
 
     Args:
         sequences: Protein sequence(s) to embed
@@ -349,7 +375,7 @@ if __name__ == "__main__":
     ]
 
     # Using 650M model with custom model directory
-    print("Using ESM-2 650M model with sequence cleaning:")
+    print("Using ESM-2 650M model with sequence cleaning (Memory Optimized):")
     embeddings_650m = embed_proteins(
         sequences,
         model="650M",

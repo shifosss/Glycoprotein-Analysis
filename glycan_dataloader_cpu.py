@@ -197,6 +197,7 @@ class GlycanProteinDataLoader:
         cache_files = []
         pairs_to_compute = []
         indices_to_compute = []
+        return_numpy_flag = True
 
         # Check which embeddings are already cached
         for i, (glycan, protein) in enumerate(pairs):
@@ -222,7 +223,7 @@ class GlycanProteinDataLoader:
                 batch_embeddings = self.embedder.embed_pairs(
                     batch_pairs,
                     batch_size=embedding_batch_size,
-                    return_numpy=True
+                    return_numpy=return_numpy_flag
                 )
 
                 # Save each embedding to cache
@@ -231,7 +232,10 @@ class GlycanProteinDataLoader:
                     cache_path = self._get_cache_path(cache_key)
 
                     # Save embedding
-                    np.save(cache_path, batch_embeddings[j])
+                    if return_numpy_flag:
+                        np.save(cache_path, batch_embeddings[j])
+                    else:
+                        np.save(cache_path, batch_embeddings[j].cpu())
 
                     # Update cache_files list
                     original_idx = batch_indices[j]

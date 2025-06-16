@@ -193,4 +193,5 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-.v100_embedding_cache/
+v100_embedding_cache/
+cpu_embedding_cache/

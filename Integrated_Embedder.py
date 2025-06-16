@@ -2,6 +2,7 @@
 Glycan-Protein Pair Embedder
 Combines glycan and protein embeddings for downstream model training
 Updated to work with refactored GlycanEmbedder
+MEMORY OPTIMIZED VERSION - Prevents GPU memory accumulation
 """
 import numpy as np
 import torch
@@ -21,6 +22,7 @@ class GlycanProteinPairEmbedder:
     """
     Embedder for glycan-protein pairs with concatenation and attention-based fusion
     Updated to work with refactored GlycanEmbedder
+    MEMORY OPTIMIZED - Prevents GPU memory accumulation during embedding
     """
 
     def __init__(self,
@@ -117,6 +119,7 @@ class GlycanProteinPairEmbedder:
                     return_numpy: bool = False) -> Union[np.ndarray, torch.Tensor]:
         """
         Embed glycan-protein pairs
+        MEMORY OPTIMIZED VERSION - Prevents GPU memory accumulation
 
         Args:
             pairs: List of (glycan_iupac, protein_sequence) tuples
@@ -126,7 +129,13 @@ class GlycanProteinPairEmbedder:
         Returns:
             Embeddings of shape (n_pairs, output_dim)
         """
-        all_embeddings = []
+        # 🔧 MEMORY FIX 1: 根据return_numpy决定存储策略
+        if return_numpy:
+            # 如果返回numpy，直接在CPU上累积结果
+            all_embeddings_cpu = []
+        else:
+            # 如果返回tensor，在GPU上累积但及时清理中间结果
+            all_embeddings = []
 
         # Process in batches
         for i in range(0, len(pairs), batch_size):
@@ -182,14 +191,38 @@ class GlycanProteinPairEmbedder:
 
                 logger.debug(f"Combined shape: {combined.shape}")
 
-                all_embeddings.append(combined)
+                # 🔧 MEMORY FIX 2: 根据return_numpy立即处理结果
+                if return_numpy:
+                    # 立即转为CPU numpy并清理GPU内存
+                    combined_cpu = combined.cpu().numpy()
+                    all_embeddings_cpu.append(combined_cpu)
 
-        # Concatenate all batches
-        final_embeddings = torch.cat(all_embeddings, dim=0)
+                    # 🔧 MEMORY FIX 3: 立即清理GPU上的中间变量
+                    del glycan_emb, protein_emb, combined
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                else:
+                    # GPU tensor模式：保留在GPU但清理中间变量
+                    all_embeddings.append(combined)
 
+                    # 🔧 MEMORY FIX 4: 清理中间变量但保留combined
+                    del glycan_emb, protein_emb
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+        # 🔧 MEMORY FIX 5: 根据return_numpy返回不同类型的结果
         if return_numpy:
-            return final_embeddings.cpu().numpy()
+            # CPU numpy模式：直接拼接numpy数组
+            return np.concatenate(all_embeddings_cpu, axis=0)
         else:
+            # GPU tensor模式：拼接后立即清理中间结果
+            final_embeddings = torch.cat(all_embeddings, dim=0)
+
+            # 清理中间列表
+            del all_embeddings
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
             return final_embeddings
 
     def _attention_fusion(self, glycan_emb: torch.Tensor, protein_emb: torch.Tensor) -> torch.Tensor:
@@ -274,6 +307,7 @@ def embed_glycan_protein_pairs(pairs: List[Tuple[str, str]],
                                **kwargs) -> np.ndarray:
     """
     Quick function to embed glycan-protein pairs with refactored embedder
+    MEMORY OPTIMIZED VERSION
 
     Args:
         pairs: List of (glycan_iupac, protein_sequence) tuples
@@ -323,120 +357,8 @@ if __name__ == "__main__":
          "MEEPQSDPSVEPPLSQETFSDLWKLLPENNVLSPLPSQAMDDLMLSPDDIEQWFTEDPGP")
     ]
 
-    # # Example 1: Simple concatenation with default settings
-    # print("Example 1: Concatenation fusion with default LSTM")
-    # embeddings_concat = embed_glycan_protein_pairs(
-    #     pairs,
-    #     protein_model="650M",
-    #     protein_model_dir="resources/esm-model-weights",
-    #     glycan_method="lstm",
-    #     glycan_vocab_path=vocab,
-    #     fusion_method="concat"
-    # )
-    # print(f"Concatenation output shape: {embeddings_concat.shape}")
-    # print(f"First embedding (first 10 values): {embeddings_concat[0, :10]}")
-    #
-    # # Example 2: Attention fusion with custom GCN
-    # print("\nExample 2: Attention fusion with custom GCN")
-    # embeddings_attention = embed_glycan_protein_pairs(
-    #     pairs,
-    #     protein_model="650M",
-    #     protein_model_dir="resources/esm-model-weights",
-    #     glycan_method="gcn",
-    #     glycan_hidden_dims=[512, 256, 640],  # End with protein dimension
-    #     glycan_readout="dual",  # Use dual readout (mean + max)
-    #     glycan_vocab_path=vocab,
-    #     fusion_method="attention",
-    #     short_cut=True,
-    #     batch_norm=True
-    # )
-    # print(f"Attention output shape: {embeddings_attention.shape}")
-    # print(f"First embedding (first 50 values): {embeddings_attention[0, :50]}")
-    #
-    # # Example 3: Using with PyTorch model and BERT glycan embedder
-    # print("\nExample 3: Integration with PyTorch model (BERT glycan embedder)")
-    # embedder = GlycanProteinPairEmbedder(
-    #     protein_model="650M",
-    #     protein_model_dir="resources/esm-model-weights",
-    #     glycan_method="bert",
-    #     glycan_hidden_dims=None,  # BERT doesn't use hidden_dims
-    #     fusion_method="attention",
-    #     glycan_vocab_path=vocab,
-    #     glycan_custom_params={
-    #         'num_layers': 8,
-    #         'num_heads': 16,
-    #         'intermediate_dim': 3072,
-    #         'hidden_dropout': 0.1
-    #     }
-    # )
-    #
-    # # Get embeddings as torch tensor for direct use in models
-    # embeddings_torch = embedder.embed_pairs(pairs, return_numpy=False)
-    # print(f"Torch tensor shape: {embeddings_torch.shape}")
-    # print(f"Device: {embeddings_torch.device}")
-    #
-    # # Example 4: Using custom embedder class directly
-    # print("\nExample 4: Using custom embedder class directly")
-    # custom_embedder = GlycanProteinPairEmbedder(
-    #     protein_model="650M",
-    #     protein_model_dir="resources/esm-model-weights",
-    #     glycan_method="gin",  # Using GIN
-    #     glycan_vocab_path=vocab,
-    #     fusion_method="concat"
-    # )
-    #
-    # # Create a custom GIN embedder with specific architecture
-    # from GlycanEmbedder_Package.glycan_embedder import GlycanGIN
-    #
-    # custom_gin = custom_embedder.create_custom_glycan_embedder(
-    #     GlycanGIN,
-    #     input_dim=256,
-    #     hidden_dims=[512, 512, 1280],
-    #     num_mlp_layer=3,
-    #     eps=0.1,
-    #     learn_eps=True,
-    #     readout="attention"
-    # )
-    # print(f"Custom GIN output dimension: {custom_gin.get_output_dim()}")
-    #
-    # # Example 5: Comparing different glycan methods
-    # print("\nExample 5: Comparing different glycan embedding methods")
-    # methods_to_compare = ['gcn', 'lstm', 'cnn', 'bert']
-    #
-    # for method in methods_to_compare:
-    #     method_embeddings = embed_glycan_protein_pairs(
-    #         pairs[:1],  # Just first pair for speed
-    #         protein_model="650M",
-    #         protein_model_dir="resources/esm-model-weights",
-    #         glycan_method=method,
-    #         glycan_vocab_path=vocab,
-    #         fusion_method="concat"
-    #     )
-    #     print(f"  {method.upper()}: embedding shape = {method_embeddings.shape}")
-    #     embeddings_torch = embedder.embed_pairs(pairs, return_numpy=False)
-    #     print(f"Torch tensor shape: {embeddings_torch.shape}")
-    #     print(f"Device: {embeddings_torch.device}")
-    #
-    # # Example 6
-    # print("\nExample 6")
-    # custom_embedder = embed_glycan_protein_pairs(
-    #     pairs[:1],  # Just first pair for speed
-    #     protein_model="650M",
-    #     protein_model_dir="resources/esm-model-weights",
-    #     glycan_method="rgcn",  # Using RGCN
-    #     glycan_hidden_dims=[1024, 768, 384, 1280],  # End with protein dimension
-    #     glycan_readout="mean",  # Use dual readout (mean + max)
-    #     glycan_vocab_path=vocab,
-    #     fusion_method="attention",
-    #     short_cut=False,
-    #     batch_norm=False,
-    #     concat_hidden=False
-    # )
-    # print(f"Concatenation output shape: {custom_embedder.shape}")
-    # print(f"First embedding (first 10 values): {custom_embedder[0, :10]}")
-
     # Example 7 Comparison between attention and concat
-    print("Example 7: Part 1 CNN + Concat")
+    print("Example 7: Part 1 CNN + Concat (Memory Optimized)")
     embeddings_concat = embed_glycan_protein_pairs(
         pairs[:1],
         protein_model="650M",
@@ -450,7 +372,7 @@ if __name__ == "__main__":
     print(f"Concatenation output shape: {embeddings_concat.shape}")
     print(f"First embedding (first 50 values): {embeddings_concat[0, :50]}")
 
-    print("Example 7: Part 2 CNN + Attention")
+    print("Example 7: Part 2 CNN + Attention (Memory Optimized)")
     embeddings_concat = embed_glycan_protein_pairs(
         pairs[:1],
         protein_model="650M",
