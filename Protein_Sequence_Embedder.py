@@ -9,6 +9,7 @@ from typing import List, Union, Optional
 import logging
 from pathlib import Path
 import urllib.request
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -55,6 +56,9 @@ class ESM2Embedder(ProteinEmbedder):
         }
     }
 
+    # Valid amino acid characters recognized by ESM models
+    VALID_AA_CHARS = set('ACDEFGHIKLMNPQRSTVWYXUOBZJ')
+
     def __init__(self, model_name: str = "650M", model_dir: str = "./models",
                  device: Optional[str] = None, repr_layer: int = -1):
         """
@@ -96,6 +100,59 @@ class ESM2Embedder(ProteinEmbedder):
 
         # Load model
         self._load_model()
+
+    def _clean_protein_sequence(self, sequence: str) -> str:
+        """
+        Clean protein sequence by replacing unrecognized characters with glycine (G)
+
+        Args:
+            sequence: Raw protein sequence
+
+        Returns:
+            str: Cleaned sequence with only valid amino acid characters
+        """
+        if not sequence:
+            return sequence
+
+        # Convert to uppercase
+        sequence = sequence.upper()
+
+        # Find unrecognized characters
+        unrecognized_chars = set(sequence) - self.VALID_AA_CHARS
+
+        if unrecognized_chars:
+            logger.warning(f"Found unrecognized characters in sequence: {unrecognized_chars}")
+            logger.warning(f"Replacing with glycine (G): {', '.join(sorted(unrecognized_chars))}")
+
+            # Replace each unrecognized character with G
+            cleaned_sequence = sequence
+            for char in unrecognized_chars:
+                cleaned_sequence = cleaned_sequence.replace(char, 'G')
+
+            return cleaned_sequence
+
+        return sequence
+
+    def _clean_sequences(self, sequences: List[str]) -> List[str]:
+        """
+        Clean a list of protein sequences
+
+        Args:
+            sequences: List of raw protein sequences
+
+        Returns:
+            List[str]: List of cleaned sequences
+        """
+        cleaned_sequences = []
+        for i, seq in enumerate(sequences):
+            cleaned_seq = self._clean_protein_sequence(seq)
+            cleaned_sequences.append(cleaned_seq)
+
+            # Log if sequence was modified
+            if cleaned_seq != seq.upper():
+                logger.info(f"Sequence {i} modified: '{seq[:50]}...' -> '{cleaned_seq[:50]}...'")
+
+        return cleaned_sequences
 
     def _download_model(self):
         """Download model if not present"""
@@ -188,8 +245,12 @@ class ESM2Embedder(ProteinEmbedder):
         if isinstance(sequences, str):
             sequences = [sequences]
 
+        # Clean sequences to remove unrecognized characters
+        logger.info(f"Cleaning {len(sequences)} sequences...")
+        cleaned_sequences = self._clean_sequences(sequences)
+
         # Prepare batch
-        data = [(f"seq_{i}", seq) for i, seq in enumerate(sequences)]
+        data = [(f"seq_{i}", seq) for i, seq in enumerate(cleaned_sequences)]
         batch_labels, batch_strs, batch_tokens = self.batch_converter(data)
         batch_tokens = batch_tokens.to(self.device)
 
@@ -280,23 +341,24 @@ def embed_proteins(sequences: Union[str, List[str]],
 
 
 if __name__ == "__main__":
-    # Example usage
+    # Example usage with sequences containing unrecognized characters
     sequences = [
         "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG",
-        "KALTARQQEVFDLIRDHISQTGMPPTRAEIAQRLGFRSPNAAEEHLKALARKGVIEIVSGASRGIRLLQEE"
+        "KAL*ARQQEVFDLIRDHISQTGMPPTRAEIAQRLGFRSPNAAEEHLKALARKGVIEIVSGASRGIRLLQEE",  # Contains *
+        "SEQUENCE[WITH]BRACKETS*AND*STARS",  # Contains [], *
     ]
 
     # Using 650M model with custom model directory
-    print("Using ESM-2 650M model:")
+    print("Using ESM-2 650M model with sequence cleaning:")
     embeddings_650m = embed_proteins(
         sequences,
         model="650M",
-        model_dir="resource/esm-model-weights"  # Custom model directory
+        model_dir="resources/esm-model-weights"  # Custom model directory
     )
     print(f"Embeddings shape: {embeddings_650m.shape}")
     print(f"First sequence embedding (first 10 dims): {embeddings_650m[0, :10]}")
 
     # Using 3B model (uncomment to test - requires more memory)
     # print("\nUsing ESM-2 3B model:")
-    # embeddings_3b = embed_proteins(sequences, model="3B", model_dir="resource/esm-model-weights")
+    # embeddings_3b = embed_proteins(sequences, model="3B", model_dir="resources/esm-model-weights")
     # print(f"Embeddings shape: {embeddings_3b.shape}")

@@ -34,7 +34,7 @@ sequences = [
     "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG",
     "KALTARQQEVFDLIRDHISQTGMPPTRAEIAQRLGFRSPNAAEEHLKALARKGVIEIVSGASRGIRLLQEE"
 ]
-embeddings = embed_proteins(sequences, model_dir="resource/esm-model-weights")
+embeddings = embed_proteins(sequences, model_dir="resources/esm-model-weights")
 print(f"Embeddings shape: {embeddings.shape}")  # (2, 1280) for 650M model
 ```
 
@@ -191,10 +191,10 @@ By default, models are stored in `./models`. You can specify a custom directory:
 
 ```python
 # Using the convenience function
-embeddings = embed_proteins(sequences, model_dir="resource/esm-model-weights")
+embeddings = embed_proteins(sequences, model_dir="resources/esm-model-weights")
 
 # Using the class interface
-embedder = ESM2Embedder(model_name="650M", model_dir="resource/esm-model-weights")
+embedder = ESM2Embedder(model_name="650M", model_dir="resources/esm-model-weights")
 ```
 
 The models will be downloaded directly to your specified directory on first use, avoiding the default PyTorch hub cache location.

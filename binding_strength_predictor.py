@@ -34,7 +34,7 @@ class BindingStrengthPredictor:
     def __init__(self,
                  # Embedder parameters
                  protein_model: str = "650M",
-                 protein_model_dir: str = "resource/esm-model-weights",
+                 protein_model_dir: str = "resources/esm-model-weights",
                  glycan_method: str = "lstm",
                  glycan_vocab_path: Optional[str] = None,
                  glycan_hidden_dims: Optional[List[int]] = None,
@@ -534,7 +534,7 @@ if __name__ == "__main__":
     print("Example 1: Training MLP predictor")
     predictor = BindingStrengthPredictor(
         protein_model="650M",
-        protein_model_dir="resource/esm-model-weights",
+        protein_model_dir="resources/esm-model-weights",
         glycan_method="lstm",
         glycan_vocab_path=vocab_path,
         fusion_method="concat",

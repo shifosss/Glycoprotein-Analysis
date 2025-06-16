@@ -26,7 +26,7 @@ class GlycanProteinPairEmbedder:
     def __init__(self,
                  # Protein embedder settings
                  protein_model: str = "650M",
-                 protein_model_dir: str = "resource/esm-model-weights",
+                 protein_model_dir: str = "resources/esm-model-weights",
 
                  # Glycan embedder settings
                  glycan_method: str = "lstm",
@@ -328,7 +328,7 @@ if __name__ == "__main__":
     # embeddings_concat = embed_glycan_protein_pairs(
     #     pairs,
     #     protein_model="650M",
-    #     protein_model_dir="resource/esm-model-weights",
+    #     protein_model_dir="resources/esm-model-weights",
     #     glycan_method="lstm",
     #     glycan_vocab_path=vocab,
     #     fusion_method="concat"
@@ -341,7 +341,7 @@ if __name__ == "__main__":
     # embeddings_attention = embed_glycan_protein_pairs(
     #     pairs,
     #     protein_model="650M",
-    #     protein_model_dir="resource/esm-model-weights",
+    #     protein_model_dir="resources/esm-model-weights",
     #     glycan_method="gcn",
     #     glycan_hidden_dims=[512, 256, 640],  # End with protein dimension
     #     glycan_readout="dual",  # Use dual readout (mean + max)
@@ -357,7 +357,7 @@ if __name__ == "__main__":
     # print("\nExample 3: Integration with PyTorch model (BERT glycan embedder)")
     # embedder = GlycanProteinPairEmbedder(
     #     protein_model="650M",
-    #     protein_model_dir="resource/esm-model-weights",
+    #     protein_model_dir="resources/esm-model-weights",
     #     glycan_method="bert",
     #     glycan_hidden_dims=None,  # BERT doesn't use hidden_dims
     #     fusion_method="attention",
@@ -379,7 +379,7 @@ if __name__ == "__main__":
     # print("\nExample 4: Using custom embedder class directly")
     # custom_embedder = GlycanProteinPairEmbedder(
     #     protein_model="650M",
-    #     protein_model_dir="resource/esm-model-weights",
+    #     protein_model_dir="resources/esm-model-weights",
     #     glycan_method="gin",  # Using GIN
     #     glycan_vocab_path=vocab,
     #     fusion_method="concat"
@@ -407,7 +407,7 @@ if __name__ == "__main__":
     #     method_embeddings = embed_glycan_protein_pairs(
     #         pairs[:1],  # Just first pair for speed
     #         protein_model="650M",
-    #         protein_model_dir="resource/esm-model-weights",
+    #         protein_model_dir="resources/esm-model-weights",
     #         glycan_method=method,
     #         glycan_vocab_path=vocab,
     #         fusion_method="concat"
@@ -422,7 +422,7 @@ if __name__ == "__main__":
     # custom_embedder = embed_glycan_protein_pairs(
     #     pairs[:1],  # Just first pair for speed
     #     protein_model="650M",
-    #     protein_model_dir="resource/esm-model-weights",
+    #     protein_model_dir="resources/esm-model-weights",
     #     glycan_method="rgcn",  # Using RGCN
     #     glycan_hidden_dims=[1024, 768, 384, 1280],  # End with protein dimension
     #     glycan_readout="mean",  # Use dual readout (mean + max)
@@ -440,7 +440,7 @@ if __name__ == "__main__":
     embeddings_concat = embed_glycan_protein_pairs(
         pairs[:1],
         protein_model="650M",
-        protein_model_dir="resource/esm-model-weights",
+        protein_model_dir="resources/esm-model-weights",
         glycan_method="cnn",
         glycan_hidden_dims=[512, 256, 1280],  # End with protein dimension
         glycan_readout="dual",  # Use dual readout (mean + max)
@@ -454,7 +454,7 @@ if __name__ == "__main__":
     embeddings_concat = embed_glycan_protein_pairs(
         pairs[:1],
         protein_model="650M",
-        protein_model_dir="resource/esm-model-weights",
+        protein_model_dir="resources/esm-model-weights",
         glycan_method="cnn",
         glycan_hidden_dims=[512, 256, 1280],  # End with protein dimension
         glycan_readout="dual",  # Use dual readout (mean + max)

@@ -1,6 +1,6 @@
 """
 PyTorch Integration Example: Glycan-Protein Binding Prediction
-Shows how to use the PyTorch DataLoader with the binding strength predictor
+Optimized for V100-32G GPU with caching and memory management
 """
 import torch
 import torch.nn as nn
@@ -9,6 +9,7 @@ import numpy as np
 from typing import Dict, Optional
 import logging
 from tqdm import tqdm
+import time
 
 # Import our custom modules
 from glycan_dataloader import GlycanProteinDataLoader, create_glycan_dataloaders
@@ -21,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 class PyTorchBindingPredictor:
     """
-    PyTorch-based binding strength predictor using GPU-optimized DataLoaders
+    PyTorch-based binding strength predictor using GPU-optimized DataLoaders with caching
+    Optimized for V100-32G GPU
     """
 
     def __init__(self,
@@ -74,7 +76,7 @@ class PyTorchBindingPredictor:
               weight_decay: float = 1e-4,
               patience: int = 10) -> Dict:
         """
-        Train the model using PyTorch DataLoaders
+        Train the model using cached PyTorch DataLoaders
 
         Args:
             dataloaders: Dictionary with train/val DataLoaders
@@ -100,7 +102,7 @@ class PyTorchBindingPredictor:
 
         # Initialize scheduler
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, patience=patience//2, factor=0.5, verbose=True
+            self.optimizer, patience=patience // 2, factor=0.5, verbose=True
         )
 
         # Training loop
@@ -111,7 +113,14 @@ class PyTorchBindingPredictor:
         train_loader = dataloaders['train']
         val_loader = dataloaders.get('val', None)
 
+        # Log dataset sizes
+        logger.info(f"Train batches: {len(train_loader)}")
+        if val_loader:
+            logger.info(f"Validation batches: {len(val_loader)}")
+
         for epoch in range(num_epochs):
+            epoch_start = time.time()
+
             # Training phase
             train_loss, train_r2 = self._train_epoch(train_loader)
 
@@ -120,6 +129,8 @@ class PyTorchBindingPredictor:
                 val_loss, val_r2 = self._eval_epoch(val_loader)
             else:
                 val_loss, val_r2 = train_loss, train_r2
+
+            epoch_time = time.time() - epoch_start
 
             # Update history
             self.history['train_loss'].append(train_loss)
@@ -138,11 +149,11 @@ class PyTorchBindingPredictor:
             else:
                 patience_counter += 1
 
-            # Log progress
-            if epoch % 10 == 0 or epoch == num_epochs - 1:
+            # Log progress with timing
+            if epoch % 5 == 0 or epoch == num_epochs - 1:
                 logger.info(
                     f"Epoch {epoch:3d}: Train Loss={train_loss:.4f}, Val Loss={val_loss:.4f}, "
-                    f"Train R²={train_r2:.4f}, Val R²={val_r2:.4f}"
+                    f"Train R²={train_r2:.4f}, Val R²={val_r2:.4f}, Time={epoch_time:.1f}s"
                 )
 
             # Early stopping
@@ -158,14 +169,17 @@ class PyTorchBindingPredictor:
         return self.history
 
     def _train_epoch(self, dataloader) -> tuple:
-        """Train for one epoch"""
+        """Train for one epoch with enhanced logging"""
         self.model.train()
         total_loss = 0.0
         all_preds = []
         all_targets = []
 
-        for embeddings, targets in dataloader:
-            # Data is already on GPU from DataLoader
+        # Use tqdm for progress bar
+        pbar = tqdm(dataloader, desc="Training", leave=False)
+
+        for batch_idx, (embeddings, targets) in enumerate(pbar):
+            # Data is already on GPU from cached dataset
             self.optimizer.zero_grad()
 
             # Forward pass
@@ -181,6 +195,9 @@ class PyTorchBindingPredictor:
             all_preds.extend(outputs.detach().cpu().numpy())
             all_targets.extend(targets.detach().cpu().numpy())
 
+            # Update progress bar
+            pbar.set_postfix({'Loss': f'{loss.item():.4f}'})
+
         avg_loss = total_loss / len(dataloader)
         r2 = self._calculate_r2(all_targets, all_preds)
 
@@ -194,7 +211,7 @@ class PyTorchBindingPredictor:
         all_targets = []
 
         with torch.no_grad():
-            for embeddings, targets in dataloader:
+            for embeddings, targets in tqdm(dataloader, desc="Validation", leave=False):
                 outputs = self.model(embeddings).squeeze()
                 loss = self.criterion(outputs, targets)
 
@@ -221,7 +238,7 @@ class PyTorchBindingPredictor:
         all_targets = []
 
         with torch.no_grad():
-            for embeddings, targets in dataloader:
+            for embeddings, targets in tqdm(dataloader, desc="Evaluating", leave=False):
                 outputs = self.model(embeddings).squeeze()
                 all_preds.extend(outputs.cpu().numpy())
                 all_targets.extend(targets.cpu().numpy())
@@ -246,7 +263,7 @@ class PyTorchBindingPredictor:
         predictions = []
 
         with torch.no_grad():
-            for embeddings, _ in dataloader:
+            for embeddings, _ in tqdm(dataloader, desc="Predicting", leave=False):
                 outputs = self.model(embeddings).squeeze()
                 predictions.extend(outputs.cpu().numpy())
 
@@ -262,48 +279,89 @@ class PyTorchBindingPredictor:
 
 
 def run_pytorch_pipeline():
-    """Run complete PyTorch-based pipeline"""
+    """Run complete PyTorch-based pipeline optimized for V100-32G"""
     print("Running PyTorch Glycan-Protein Binding Pipeline")
+    print("Optimized for V100-32G GPU with Caching")
     print("=" * 60)
 
-    # Configuration
+    # Configuration optimized for V100-32G (32GB GPU memory)
     data_path = "data/v12_glycan_binding.csv"
     vocab_path = "GlycanEmbedder_Package/glycoword_vocab.pkl"
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # V100-32G optimized settings
+    gpu_memory_limit = 4096  # ~10GB for embeddings (plenty of room for model)
+    batch_size = 128  # Large batches for V100
+    embedding_batch_size = 128  # Fast embedding computation
+    cache_dir = "v100_embedding_cache"
+
+    logger.info(f"Using device: {device}")
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+        logger.info(f"GPU: {gpu_name}, Memory: {gpu_memory:.1f} GB")
 
     try:
         # Initialize embedder
         logger.info("Initializing embedder...")
         embedder = GlycanProteinPairEmbedder(
-            protein_model="650M",
+            protein_model="650M",  # Can use "3B" if you want larger model
             protein_model_dir="resources/esm-model-weights",
-            glycan_method="lstm",
+            glycan_method="lstm",  # Try "gcn" or "bert" for different methods
             glycan_vocab_path=vocab_path,
-            fusion_method="concat",
+            fusion_method="concat",  # Try "attention" for more sophisticated fusion
             device=device
         )
 
-        # Create DataLoaders
-        logger.info("Creating DataLoaders...")
+        # Create DataLoaders with caching and V100 optimization
+        logger.info("Creating cached DataLoaders...")
+        start_time = time.time()
+
         dataloaders = create_glycan_dataloaders(
             data_path=data_path,
             embedder=embedder,
+
+            # Data splits
             test_size=0.2,
             val_size=0.1,
-            batch_size=32,
-            max_pairs=1000,  # Limit for testing
-            device=device
+
+            # V100-32G optimized settings
+            batch_size=batch_size,
+            gpu_memory_limit=gpu_memory_limit,  # 4096 embeddings ~10GB
+            cache_dir=cache_dir,
+            device=device,
+
+            # For testing, limit pairs (remove for full dataset)
+            max_pairs=5000,  # Remove this line for full dataset
         )
 
-        # Initialize predictor
+        setup_time = time.time() - start_time
+        logger.info(f"DataLoader setup completed in {setup_time:.1f}s")
+
+        # Show cache information
+        if hasattr(dataloaders, 'get_cache_info'):
+            cache_info = dataloaders.get_cache_info()
+            logger.info(f"Cache info: {cache_info}")
+        else:
+            # Create temporary loader to check cache
+            temp_loader = GlycanProteinDataLoader(
+                data_path=data_path,
+                embedder=embedder,
+                cache_dir=cache_dir
+            )
+            cache_info = temp_loader.get_cache_info()
+            logger.info(f"Cache: {cache_info['cached_files']} files, {cache_info['cache_size_mb']:.1f} MB")
+
+        # Initialize predictor with V100-optimized network
         logger.info("Initializing predictor...")
         predictor = PyTorchBindingPredictor(
             embedder=embedder,
             network_type="mlp",
             network_config={
-                "hidden_dims": [512, 256, 128],
+                "hidden_dims": [1024, 512, 256, 128],  # Larger network for V100
                 "dropout": 0.3,
-                "activation": "relu"
+                "activation": "relu",
+                "batch_norm": True  # Add batch norm for stability
             },
             device=device
         )
@@ -312,9 +370,10 @@ def run_pytorch_pipeline():
         logger.info("Training model...")
         history = predictor.train(
             dataloaders=dataloaders,
-            num_epochs=30,
-            learning_rate=1e-3,
-            patience=10
+            num_epochs=50,  # More epochs for V100
+            learning_rate=2e-3,  # Slightly higher LR for larger batches
+            weight_decay=1e-4,
+            patience=15  # More patience for larger dataset
         )
 
         # Evaluate on test set
@@ -323,54 +382,73 @@ def run_pytorch_pipeline():
 
         # Print results
         print(f"\nTraining completed!")
+        print(f"Best validation R²: {max(history['val_r2']):.4f}")
         print(f"Final validation R²: {history['val_r2'][-1]:.4f}")
         print(f"Test Results:")
         print(f"  R²: {test_metrics['r2']:.4f}")
         print(f"  RMSE: {test_metrics['rmse']:.4f}")
         print(f"  MAE: {test_metrics['mae']:.4f}")
+        print(f"  MSE: {test_metrics['mse']:.4f}")
+
+        # Show GPU memory usage
+        if torch.cuda.is_available():
+            memory_allocated = torch.cuda.memory_allocated(0) / 1e9
+            memory_reserved = torch.cuda.memory_reserved(0) / 1e9
+            logger.info(f"GPU Memory - Allocated: {memory_allocated:.1f}GB, Reserved: {memory_reserved:.1f}GB")
 
         # Plot results if matplotlib available
         try:
             import matplotlib.pyplot as plt
 
-            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+            fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+            fig.suptitle('V100-32G Training Results', fontsize=16)
 
             # Training curves
-            axes[0].plot(history['train_loss'], label='Train Loss', alpha=0.7)
-            axes[0].plot(history['val_loss'], label='Val Loss', alpha=0.7)
-            axes[0].set_title('Training Loss')
-            axes[0].set_xlabel('Epoch')
-            axes[0].set_ylabel('Loss')
-            axes[0].legend()
-            axes[0].grid(True, alpha=0.3)
+            axes[0, 0].plot(history['train_loss'], label='Train Loss', alpha=0.7)
+            axes[0, 0].plot(history['val_loss'], label='Val Loss', alpha=0.7)
+            axes[0, 0].set_title('Training Loss')
+            axes[0, 0].set_xlabel('Epoch')
+            axes[0, 0].set_ylabel('Loss')
+            axes[0, 0].legend()
+            axes[0, 0].grid(True, alpha=0.3)
 
             # R² curves
-            axes[1].plot(history['train_r2'], label='Train R²', alpha=0.7)
-            axes[1].plot(history['val_r2'], label='Val R²', alpha=0.7)
-            axes[1].set_title('R² Score')
-            axes[1].set_xlabel('Epoch')
-            axes[1].set_ylabel('R²')
-            axes[1].legend()
-            axes[1].grid(True, alpha=0.3)
+            axes[0, 1].plot(history['train_r2'], label='Train R²', alpha=0.7)
+            axes[0, 1].plot(history['val_r2'], label='Val R²', alpha=0.7)
+            axes[0, 1].set_title('R² Score')
+            axes[0, 1].set_xlabel('Epoch')
+            axes[0, 1].set_ylabel('R²')
+            axes[0, 1].legend()
+            axes[0, 1].grid(True, alpha=0.3)
 
             # Predictions vs targets
-            axes[2].scatter(test_targets, test_preds, alpha=0.6, s=20)
+            axes[1, 0].scatter(test_targets, test_preds, alpha=0.6, s=20)
             min_val = min(test_targets.min(), test_preds.min())
             max_val = max(test_targets.max(), test_preds.max())
-            axes[2].plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.8)
-            axes[2].set_xlabel('Actual Binding Strength')
-            axes[2].set_ylabel('Predicted Binding Strength')
-            axes[2].set_title(f'Predictions vs Actuals (R² = {test_metrics["r2"]:.3f})')
-            axes[2].grid(True, alpha=0.3)
+            axes[1, 0].plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.8)
+            axes[1, 0].set_xlabel('Actual Binding Strength')
+            axes[1, 0].set_ylabel('Predicted Binding Strength')
+            axes[1, 0].set_title(f'Predictions vs Actuals (R² = {test_metrics["r2"]:.3f})')
+            axes[1, 0].grid(True, alpha=0.3)
+
+            # Residuals plot
+            residuals = test_preds - test_targets
+            axes[1, 1].scatter(test_targets, residuals, alpha=0.6, s=20)
+            axes[1, 1].axhline(y=0, color='r', linestyle='--', alpha=0.8)
+            axes[1, 1].set_xlabel('Actual Binding Strength')
+            axes[1, 1].set_ylabel('Residuals')
+            axes[1, 1].set_title('Residuals Plot')
+            axes[1, 1].grid(True, alpha=0.3)
 
             plt.tight_layout()
-            plt.savefig("pytorch_pipeline_results.png", dpi=300, bbox_inches='tight')
+            plt.savefig("v100_pytorch_pipeline_results.png", dpi=300, bbox_inches='tight')
             plt.show()
 
         except ImportError:
             logger.info("Matplotlib not available, skipping plots")
 
-        print("\nPyTorch pipeline completed successfully!")
+        print(f"\nV100-32G PyTorch pipeline completed successfully!")
+        print(f"Total training time with caching: {setup_time:.1f}s setup + training time")
 
     except Exception as e:
         logger.error(f"Error in pipeline: {e}")
@@ -378,9 +456,10 @@ def run_pytorch_pipeline():
         traceback.print_exc()
 
 
-def test_dataloader_only():
-    """Test just the DataLoader functionality"""
-    print("Testing PyTorch DataLoader only")
+def test_v100_dataloader():
+    """Test cached DataLoader functionality on V100-32G"""
+    print("Testing V100-32G Cached DataLoader")
+    print("=" * 40)
 
     try:
         # Mock embedder for testing
@@ -389,36 +468,58 @@ def test_dataloader_only():
                 self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
             def get_output_dim(self):
-                return 128
+                return 1280  # ESM2-650M dimension
 
             def embed_pairs(self, pairs, batch_size=32, return_numpy=False):
                 n_pairs = len(pairs)
-                embedding_dim = 128
-                embeddings = torch.randn(n_pairs, embedding_dim)
-                return embeddings.to(self.device) if not return_numpy else embeddings.numpy()
+                embedding_dim = 1280
+                embeddings = np.random.randn(n_pairs, embedding_dim).astype(np.float32)
+                return embeddings
 
         embedder = MockEmbedder()
 
-        # Test DataLoader creation
+        # Test with V100-32G optimized settings
+        start_time = time.time()
+
         dataloaders = create_glycan_dataloaders(
             data_path="data/v12_glycan_binding.csv",
             embedder=embedder,
-            batch_size=16,
-            max_pairs=100
+            batch_size=128,  # Large batch for V100
+            gpu_memory_limit=2048,  # 2048 embeddings ~5GB
+            cache_dir="test_v100_cache",
+            max_pairs=500  # Small for testing
         )
 
-        # Test iteration
-        print("Testing DataLoader iteration:")
+        setup_time = time.time() - start_time
+
+        # Test iteration performance
+        print(f"DataLoader setup: {setup_time:.2f}s")
+        print("Testing iteration performance:")
+
         train_loader = dataloaders['train']
 
+        iteration_start = time.time()
         for batch_idx, (embeddings, targets) in enumerate(train_loader):
             print(f"Batch {batch_idx}: {embeddings.shape}, {targets.shape}")
             print(f"  Devices: {embeddings.device}, {targets.device}")
+            print(f"  Memory: {torch.cuda.memory_allocated(0) / 1e9:.1f}GB allocated")
 
-            if batch_idx >= 2:
+            if batch_idx >= 3:
                 break
 
-        print("DataLoader test successful!")
+        iteration_time = time.time() - iteration_start
+        print(f"Iteration time: {iteration_time:.2f}s")
+
+        # Show cache info
+        temp_loader = GlycanProteinDataLoader(
+            data_path="data/v12_glycan_binding.csv",
+            embedder=embedder,
+            cache_dir="test_v100_cache"
+        )
+        cache_info = temp_loader.get_cache_info()
+        print(f"Cache: {cache_info['cached_files']} files, {cache_info['cache_size_mb']:.1f} MB")
+
+        print("V100-32G DataLoader test completed successfully!")
 
     except Exception as e:
         print(f"DataLoader test failed: {e}")
@@ -426,11 +527,35 @@ def test_dataloader_only():
         traceback.print_exc()
 
 
+def clear_cache():
+    """Utility function to clear embedding cache"""
+    cache_dir = "v100_embedding_cache"
+    temp_loader = GlycanProteinDataLoader(
+        data_path="data/v12_glycan_binding.csv",
+        embedder=None,  # Won't be used for cache operations
+        cache_dir=cache_dir
+    )
+
+    cache_info = temp_loader.get_cache_info()
+    print(f"Current cache: {cache_info['cached_files']} files, {cache_info['cache_size_mb']:.1f} MB")
+
+    response = input("Clear cache? (y/N): ")
+    if response.lower() == 'y':
+        temp_loader.clear_cache()
+        print("Cache cleared!")
+    else:
+        print("Cache not cleared.")
+
+
 if __name__ == "__main__":
-    # Choose which test to run
     import sys
 
-    if len(sys.argv) > 1 and sys.argv[1] == "dataloader":
-        test_dataloader_only()
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "test":
+            test_v100_dataloader()
+        elif sys.argv[1] == "clear_cache":
+            clear_cache()
+        else:
+            print("Available commands: test, clear_cache")
     else:
         run_pytorch_pipeline()

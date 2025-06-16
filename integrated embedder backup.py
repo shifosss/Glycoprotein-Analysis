@@ -24,7 +24,7 @@ class GlycanProteinPairEmbedder:
     def __init__(self,
                  # Protein embedder settings
                  protein_model: str = "650M",
-                 protein_model_dir: str = "resource/esm-model-weights",
+                 protein_model_dir: str = "resources/esm-model-weights",
 
                  # Glycan embedder settings
                  glycan_method: str = "lstm",
@@ -250,7 +250,7 @@ if __name__ == "__main__":
     embeddings_concat = embed_glycan_protein_pairs(
         pairs,
         protein_model="650M",
-        protein_model_dir="resource/esm-model-weights",
+        protein_model_dir="resources/esm-model-weights",
         glycan_method="lstm",
         glycan_vocab_path="GlycanEmbedder_Package/glycoword_vocab.pkl",
         fusion_method="concat"
@@ -263,7 +263,7 @@ if __name__ == "__main__":
     embeddings_attention = embed_glycan_protein_pairs(
         pairs,
         protein_model="650M",
-        protein_model_dir="resource/esm-model-weights",
+        protein_model_dir="resources/esm-model-weights",
         glycan_method="lstm",
         glycan_vocab_path="GlycanEmbedder_Package/glycoword_vocab.pkl",
         fusion_method="attention"
@@ -275,7 +275,7 @@ if __name__ == "__main__":
     print("\nExample 3: Integration with PyTorch model")
     embedder = GlycanProteinPairEmbedder(
         protein_model="650M",
-        protein_model_dir="resource/esm-model-weights",
+        protein_model_dir="resources/esm-model-weights",
         glycan_method="bert",
         fusion_method="attention",
         glycan_vocab_path="GlycanEmbedder_Package/glycoword_vocab.pkl"
