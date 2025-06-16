@@ -499,6 +499,7 @@ def create_glycan_dataloaders(data_path: str = "data/v12_glycan_binding.csv",
                             test_size: float = 0.2,
                             val_size: float = 0.1,
                             batch_size: int = 32,
+                            embedding_batch_size: int = 32,
                             max_pairs: Optional[int] = None,
                             device: Optional[str] = None,
                             cache_dir: str = "embedding_cache",
@@ -512,6 +513,7 @@ def create_glycan_dataloaders(data_path: str = "data/v12_glycan_binding.csv",
         test_size: Test set fraction
         val_size: Validation set fraction
         batch_size: Batch size
+        embedding_batch_size: Batch size for embedding computation
         max_pairs: Maximum pairs per split
         device: Computing device
         cache_dir: Directory for caching embeddings
@@ -534,6 +536,7 @@ def create_glycan_dataloaders(data_path: str = "data/v12_glycan_binding.csv",
         test_size=test_size,
         val_size=val_size,
         batch_size=batch_size,
+        embedding_batch_size=embedding_batch_size,
         max_pairs_per_split=max_pairs,
         gpu_memory_limit=gpu_memory_limit
     )

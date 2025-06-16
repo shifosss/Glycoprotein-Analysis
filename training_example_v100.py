@@ -290,9 +290,9 @@ def run_pytorch_pipeline():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # V100-32G optimized settings
-    gpu_memory_limit = 4096  # ~10GB for embeddings (plenty of room for model)
-    batch_size = 128  # Large batches for V100
-    embedding_batch_size = 128  # Fast embedding computation
+    gpu_memory_limit = 128  # ~10GB for embeddings (plenty of room for model)
+    batch_size = 16  # Large batches for V100
+    embedding_batch_size = 16  # Fast embedding computation
     cache_dir = "v100_embedding_cache"
 
     logger.info(f"Using device: {device}")
@@ -322,7 +322,7 @@ def run_pytorch_pipeline():
             embedder=embedder,
 
             # Data splits
-            test_size=0.2,
+            test_size=0.1,
             val_size=0.1,
 
             # V100-32G optimized settings
@@ -330,9 +330,10 @@ def run_pytorch_pipeline():
             gpu_memory_limit=gpu_memory_limit,  # 4096 embeddings ~10GB
             cache_dir=cache_dir,
             device=device,
+            embedding_batch_size=embedding_batch_size,
 
             # For testing, limit pairs (remove for full dataset)
-            max_pairs=5000,  # Remove this line for full dataset
+            max_pairs=300  # Remove this line for full dataset
         )
 
         setup_time = time.time() - start_time
