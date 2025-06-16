@@ -1,449 +1,581 @@
 """
-Neural Network Architectures for Protein-Glycan Binding Strength Prediction
-Defines various neural network architectures for supervised learning on embeddings
+Binding Strength Predictor
+Integrates glycan-protein embedder with neural networks for supervised learning
 """
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import List, Optional
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset, random_split
+import numpy as np
+import pandas as pd
+from typing import Dict, List, Tuple, Optional, Union, Callable
 import logging
+from pathlib import Path
+import json
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
 
+# Import custom modules
+from Integrated_Embedder import GlycanProteinPairEmbedder
+from binding_strength_networks import BindingStrengthNetworkFactory
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class MLPRegressor(nn.Module):
+class BindingStrengthPredictor:
     """
-    Multi-Layer Perceptron for binding strength regression
+    Main class for predicting protein-glycan binding strength using embeddings and neural networks
     """
 
     def __init__(self,
-                 input_dim: int,
-                 hidden_dims: List[int] = [512, 256, 128],
-                 dropout: float = 0.3,
-                 activation: str = "relu",
-                 batch_norm: bool = True,
-                 output_activation: Optional[str] = None):
+                 # Embedder parameters
+                 protein_model: str = "650M",
+                 protein_model_dir: str = "resource/esm-model-weights",
+                 glycan_method: str = "lstm",
+                 glycan_vocab_path: Optional[str] = None,
+                 glycan_hidden_dims: Optional[List[int]] = None,
+                 glycan_readout: str = "mean",
+                 fusion_method: str = "concat",
+
+                 # Network parameters
+                 network_type: str = "mlp",
+                 network_config: Optional[Dict] = None,
+
+                 # Training parameters
+                 device: Optional[str] = None,
+                 random_seed: int = 42):
         """
-        Initialize MLP regressor
+        Initialize the Binding Strength Predictor
 
         Args:
-            input_dim: Input embedding dimension
-            hidden_dims: List of hidden layer dimensions
-            dropout: Dropout probability
-            activation: Activation function ('relu', 'gelu', 'tanh')
-            batch_norm: Whether to use batch normalization
-            output_activation: Output activation ('sigmoid', 'tanh', None)
+            protein_model: ESM2 model size ("650M" or "3B")
+            protein_model_dir: Directory for protein model weights
+            glycan_method: Glycan embedding method
+            glycan_vocab_path: Path to glycan vocabulary file
+            glycan_hidden_dims: Hidden dimensions for glycan embedder
+            glycan_readout: Readout function for graph-based methods
+            fusion_method: "concat" or "attention"
+            network_type: Type of neural network ("mlp", "residual_mlp", "attention", "ensemble")
+            network_config: Configuration for the neural network
+            device: Device to use (None = auto-detect)
+            random_seed: Random seed for reproducibility
         """
-        super().__init__()
+        # Set random seed
+        torch.manual_seed(random_seed)
+        np.random.seed(random_seed)
 
-        self.input_dim = input_dim
-        self.hidden_dims = hidden_dims
-        self.dropout = dropout
+        # Set device
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info(f"Using device: {self.device}")
 
-        # Choose activation function
-        activation_map = {
-            'relu': nn.ReLU(),
-            'gelu': nn.GELU(),
-            'tanh': nn.Tanh(),
-            'leaky_relu': nn.LeakyReLU(0.1)
+        # Initialize embedder
+        logger.info("Initializing glycan-protein embedder...")
+        self.embedder = GlycanProteinPairEmbedder(
+            protein_model=protein_model,
+            protein_model_dir=protein_model_dir,
+            glycan_method=glycan_method,
+            glycan_vocab_path=glycan_vocab_path,
+            glycan_hidden_dims=glycan_hidden_dims,
+            glycan_readout=glycan_readout,
+            fusion_method=fusion_method,
+            device=self.device
+        )
+
+        # Get embedding dimension
+        self.embedding_dim = self.embedder.get_output_dim()
+        logger.info(f"Embedding dimension: {self.embedding_dim}")
+
+        # Initialize network
+        self.network_type = network_type
+        self.network_config = network_config or BindingStrengthNetworkFactory.get_default_config(network_type)
+
+        self.model = BindingStrengthNetworkFactory.create_network(
+            network_type, self.embedding_dim, **self.network_config
+        ).to(self.device)
+
+        logger.info(f"Initialized {network_type} network with {sum(p.numel() for p in self.model.parameters())} parameters")
+
+        # Initialize training components
+        self.optimizer = None
+        self.criterion = None
+        self.scheduler = None
+        self.scaler = StandardScaler()
+        self.is_fitted = False
+
+        # Training history
+        self.training_history = {
+            'train_loss': [],
+            'val_loss': [],
+            'train_metrics': [],
+            'val_metrics': []
         }
-        self.activation = activation_map.get(activation, nn.ReLU())
 
-        # Build layers
-        layers = []
-        prev_dim = input_dim
-
-        for hidden_dim in hidden_dims:
-            layers.append(nn.Linear(prev_dim, hidden_dim))
-            if batch_norm:
-                layers.append(nn.BatchNorm1d(hidden_dim))
-            layers.append(self.activation)
-            if dropout > 0:
-                layers.append(nn.Dropout(dropout))
-            prev_dim = hidden_dim
-
-        # Output layer
-        layers.append(nn.Linear(prev_dim, 1))
-
-        # Output activation if specified
-        if output_activation == 'sigmoid':
-            layers.append(nn.Sigmoid())
-        elif output_activation == 'tanh':
-            layers.append(nn.Tanh())
-
-        self.network = nn.Sequential(*layers)
-
-        # Initialize weights
-        self._init_weights()
-
-    def _init_weights(self):
-        """Initialize network weights"""
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def prepare_data(self,
+                     pairs: List[Tuple[str, str]],
+                     strengths: List[float],
+                     batch_size: int = 32,
+                     val_split: float = 0.2,
+                     test_split: float = 0.1,
+                     normalize_targets: bool = True) -> Dict[str, DataLoader]:
         """
-        Forward pass
+        Prepare data for training and evaluation
 
         Args:
-            x: Input embeddings of shape (batch_size, input_dim)
+            pairs: List of (glycan_iupac, protein_sequence) tuples
+            strengths: List of binding strength values
+            batch_size: Batch size for data loaders
+            val_split: Fraction of data for validation
+            test_split: Fraction of data for testing
+            normalize_targets: Whether to normalize target values
 
         Returns:
-            Predicted binding strength of shape (batch_size, 1)
+            Dictionary containing train, validation, and test data loaders
         """
-        return self.network(x)
+        logger.info(f"Preparing data for {len(pairs)} samples...")
 
+        # Generate embeddings
+        logger.info("Generating embeddings...")
+        embeddings = self.embedder.embed_pairs(pairs, batch_size=batch_size, return_numpy=True)
 
-class ResidualMLPRegressor(nn.Module):
-    """
-    MLP with residual connections for improved training
-    """
+        # Convert to numpy arrays
+        strengths = np.array(strengths)
 
-    def __init__(self,
-                 input_dim: int,
-                 hidden_dim: int = 512,
-                 num_layers: int = 4,
-                 dropout: float = 0.3,
-                 activation: str = "relu"):
-        """
-        Initialize Residual MLP
+        # Normalize targets if requested
+        if normalize_targets:
+            strengths = self.scaler.fit_transform(strengths.reshape(-1, 1)).flatten()
+            logger.info("Normalized target values")
 
-        Args:
-            input_dim: Input embedding dimension
-            hidden_dim: Hidden layer dimension (constant across layers)
-            num_layers: Number of residual blocks
-            dropout: Dropout probability
-            activation: Activation function
-        """
-        super().__init__()
+        # Convert to torch tensors
+        X = torch.FloatTensor(embeddings)
+        y = torch.FloatTensor(strengths)
 
-        activation_map = {
-            'relu': nn.ReLU(),
-            'gelu': nn.GELU(),
-            'tanh': nn.Tanh()
+        # Create dataset
+        dataset = TensorDataset(X, y)
+
+        # Split data
+        n_samples = len(dataset)
+        n_test = int(n_samples * test_split)
+        n_val = int(n_samples * val_split)
+        n_train = n_samples - n_test - n_val
+
+        train_dataset, val_dataset, test_dataset = random_split(
+            dataset, [n_train, n_val, n_test]
+        )
+
+        # Create data loaders
+        data_loaders = {
+            'train': DataLoader(train_dataset, batch_size=batch_size, shuffle=True),
+            'val': DataLoader(val_dataset, batch_size=batch_size, shuffle=False),
+            'test': DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
         }
-        self.activation = activation_map.get(activation, nn.ReLU())
 
-        # Input projection
-        self.input_proj = nn.Linear(input_dim, hidden_dim)
+        logger.info(f"Data split: train={n_train}, val={n_val}, test={n_test}")
 
-        # Residual blocks
-        self.residual_blocks = nn.ModuleList([
-            ResidualBlock(hidden_dim, dropout, self.activation)
-            for _ in range(num_layers)
-        ])
+        return data_loaders
 
-        # Output layer
-        self.output_layer = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, 1)
-        )
-
-        self._init_weights()
-
-    def _init_weights(self):
-        """Initialize weights"""
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass"""
-        x = self.input_proj(x)
-
-        for block in self.residual_blocks:
-            x = block(x)
-
-        return self.output_layer(x)
-
-
-class ResidualBlock(nn.Module):
-    """Residual block for ResidualMLP"""
-
-    def __init__(self, hidden_dim: int, dropout: float, activation):
-        super().__init__()
-
-        self.block = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, hidden_dim),
-            activation,
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Dropout(dropout)
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.block(x)
-
-
-class AttentionRegressor(nn.Module):
-    """
-    Attention-based regressor that learns to focus on important embedding features
-    """
-
-    def __init__(self,
-                 input_dim: int,
-                 hidden_dim: int = 256,
-                 num_heads: int = 8,
-                 num_layers: int = 2,
-                 dropout: float = 0.1):
+    def train(self,
+              data_loaders: Dict[str, DataLoader],
+              num_epochs: int = 100,
+              learning_rate: float = 1e-3,
+              weight_decay: float = 1e-4,
+              patience: int = 10,
+              min_delta: float = 1e-4,
+              scheduler_config: Optional[Dict] = None) -> Dict:
         """
-        Initialize Attention Regressor
+        Train the model
 
         Args:
-            input_dim: Input embedding dimension
-            hidden_dim: Hidden dimension for attention
-            num_heads: Number of attention heads
-            num_layers: Number of attention layers
-            dropout: Dropout probability
-        """
-        super().__init__()
-
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-
-        # Input projection
-        self.input_proj = nn.Linear(input_dim, hidden_dim)
-
-        # Multi-head self-attention layers
-        self.attention_layers = nn.ModuleList([
-            nn.MultiheadAttention(
-                embed_dim=hidden_dim,
-                num_heads=num_heads,
-                dropout=dropout,
-                batch_first=True
-            )
-            for _ in range(num_layers)
-        ])
-
-        # Layer norms
-        self.layer_norms = nn.ModuleList([
-            nn.LayerNorm(hidden_dim) for _ in range(num_layers)
-        ])
-
-        # Feed-forward networks
-        self.ffns = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim * 4),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden_dim * 4, hidden_dim),
-                nn.Dropout(dropout)
-            )
-            for _ in range(num_layers)
-        ])
-
-        # Output layers
-        self.output_layers = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim // 2, 1)
-        )
-
-        self._init_weights()
-
-    def _init_weights(self):
-        """Initialize weights"""
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass
-
-        Args:
-            x: Input embeddings of shape (batch_size, input_dim)
+            data_loaders: Dictionary with train/val/test data loaders
+            num_epochs: Number of training epochs
+            learning_rate: Learning rate
+            weight_decay: Weight decay for L2 regularization
+            patience: Early stopping patience
+            min_delta: Minimum change for early stopping
+            scheduler_config: Configuration for learning rate scheduler
 
         Returns:
-            Predicted binding strength of shape (batch_size, 1)
+            Training history
         """
-        # Project to hidden dimension
-        x = self.input_proj(x)  # (batch_size, hidden_dim)
+        logger.info(f"Starting training for {num_epochs} epochs...")
 
-        # Add sequence dimension for attention
-        x = x.unsqueeze(1)  # (batch_size, 1, hidden_dim)
+        # Initialize training components
+        self.criterion = nn.MSELoss()
+        self.optimizer = optim.AdamW(
+            self.model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay
+        )
 
-        # Apply attention layers
-        for attention, layer_norm, ffn in zip(self.attention_layers, self.layer_norms, self.ffns):
-            # Self-attention with residual connection
-            attn_out, _ = attention(x, x, x)
-            x = layer_norm(x + attn_out)
+        # Initialize scheduler if config provided
+        if scheduler_config:
+            scheduler_type = scheduler_config.pop('type', 'reduce_on_plateau')
+            if scheduler_type == 'reduce_on_plateau':
+                self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                    self.optimizer, **scheduler_config
+                )
+            elif scheduler_type == 'cosine':
+                self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                    self.optimizer, T_max=num_epochs, **scheduler_config
+                )
 
-            # Feed-forward with residual connection
-            ffn_out = ffn(x)
-            x = layer_norm(x + ffn_out)
+        # Early stopping variables
+        best_val_loss = float('inf')
+        patience_counter = 0
+        best_model_state = None
 
-        # Remove sequence dimension and apply output layers
-        x = x.squeeze(1)  # (batch_size, hidden_dim)
+        # Training loop
+        for epoch in range(num_epochs):
+            # Training phase
+            train_loss, train_metrics = self._train_epoch(data_loaders['train'])
 
-        return self.output_layers(x)
+            # Validation phase
+            val_loss, val_metrics = self._eval_epoch(data_loaders['val'])
 
+            # Update history
+            self.training_history['train_loss'].append(train_loss)
+            self.training_history['val_loss'].append(val_loss)
+            self.training_history['train_metrics'].append(train_metrics)
+            self.training_history['val_metrics'].append(val_metrics)
 
-class EnsembleRegressor(nn.Module):
-    """
-    Ensemble of multiple regressors for improved performance
-    """
+            # Learning rate scheduling
+            if self.scheduler:
+                if isinstance(self.scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+                    self.scheduler.step(val_loss)
+                else:
+                    self.scheduler.step()
 
-    def __init__(self,
-                 input_dim: int,
-                 models_config: List[dict],
-                 ensemble_method: str = "mean"):
-        """
-        Initialize Ensemble Regressor
-
-        Args:
-            input_dim: Input embedding dimension
-            models_config: List of model configurations
-            ensemble_method: How to combine predictions ("mean", "weighted", "stacking")
-        """
-        super().__init__()
-
-        self.ensemble_method = ensemble_method
-        self.models = nn.ModuleList()
-
-        # Create individual models
-        for config in models_config:
-            model_type = config.pop('type')
-            if model_type == 'mlp':
-                model = MLPRegressor(input_dim, **config)
-            elif model_type == 'residual_mlp':
-                model = ResidualMLPRegressor(input_dim, **config)
-            elif model_type == 'attention':
-                model = AttentionRegressor(input_dim, **config)
+            # Early stopping check
+            if val_loss < best_val_loss - min_delta:
+                best_val_loss = val_loss
+                patience_counter = 0
+                best_model_state = self.model.state_dict().copy()
             else:
-                raise ValueError(f"Unknown model type: {model_type}")
+                patience_counter += 1
 
-            self.models.append(model)
+            # Log progress
+            if epoch % 10 == 0 or epoch == num_epochs - 1:
+                logger.info(
+                    f"Epoch {epoch:3d}: "
+                    f"Train Loss={train_loss:.4f}, Val Loss={val_loss:.4f}, "
+                    f"Train R²={train_metrics['r2']:.4f}, Val R²={val_metrics['r2']:.4f}"
+                )
 
-        # Weights for weighted ensemble
-        if ensemble_method == "weighted":
-            self.weights = nn.Parameter(torch.ones(len(self.models)) / len(self.models))
+            # Early stopping
+            if patience_counter >= patience:
+                logger.info(f"Early stopping at epoch {epoch}")
+                break
 
-        # Stacking layer for stacking ensemble
-        elif ensemble_method == "stacking":
-            self.stacking_layer = nn.Sequential(
-                nn.Linear(len(self.models), len(self.models) // 2),
-                nn.ReLU(),
-                nn.Linear(len(self.models) // 2, 1)
-            )
+        # Load best model
+        if best_model_state:
+            self.model.load_state_dict(best_model_state)
+            logger.info("Loaded best model weights")
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through ensemble"""
-        # Get predictions from all models
-        predictions = torch.stack([model(x) for model in self.models], dim=-1)
+        self.is_fitted = True
 
-        if self.ensemble_method == "mean":
-            return predictions.mean(dim=-1)
+        return self.training_history
 
-        elif self.ensemble_method == "weighted":
-            weights = F.softmax(self.weights, dim=0)
-            return (predictions * weights).sum(dim=-1)
+    def _train_epoch(self, data_loader: DataLoader) -> Tuple[float, Dict]:
+        """Train for one epoch"""
+        self.model.train()
+        total_loss = 0.0
+        all_preds = []
+        all_targets = []
 
-        elif self.ensemble_method == "stacking":
-            # Flatten predictions for stacking layer
-            predictions_flat = predictions.view(predictions.size(0), -1)
-            return self.stacking_layer(predictions_flat)
+        for batch_x, batch_y in data_loader:
+            batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
 
+            # Forward pass
+            self.optimizer.zero_grad()
+            outputs = self.model(batch_x).squeeze()
+            loss = self.criterion(outputs, batch_y)
 
-class BindingStrengthNetworkFactory:
-    """Factory class for creating binding strength prediction networks"""
+            # Backward pass
+            loss.backward()
+            self.optimizer.step()
 
-    @staticmethod
-    def create_network(network_type: str, input_dim: int, **kwargs) -> nn.Module:
-        """
-        Create a network for binding strength prediction
+            # Accumulate metrics
+            total_loss += loss.item()
+            all_preds.extend(outputs.detach().cpu().numpy())
+            all_targets.extend(batch_y.detach().cpu().numpy())
 
-        Args:
-            network_type: Type of network ('mlp', 'residual_mlp', 'attention', 'ensemble')
-            input_dim: Input embedding dimension
-            **kwargs: Additional arguments for the network
+        avg_loss = total_loss / len(data_loader)
+        metrics = self._calculate_metrics(all_targets, all_preds)
 
-        Returns:
-            Neural network model
-        """
-        if network_type == "mlp":
-            return MLPRegressor(input_dim, **kwargs)
+        return avg_loss, metrics
 
-        elif network_type == "residual_mlp":
-            return ResidualMLPRegressor(input_dim, **kwargs)
+    def _eval_epoch(self, data_loader: DataLoader) -> Tuple[float, Dict]:
+        """Evaluate for one epoch"""
+        self.model.eval()
+        total_loss = 0.0
+        all_preds = []
+        all_targets = []
 
-        elif network_type == "attention":
-            return AttentionRegressor(input_dim, **kwargs)
+        with torch.no_grad():
+            for batch_x, batch_y in data_loader:
+                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
 
-        elif network_type == "ensemble":
-            return EnsembleRegressor(input_dim, **kwargs)
+                outputs = self.model(batch_x).squeeze()
+                loss = self.criterion(outputs, batch_y)
 
-        else:
-            raise ValueError(f"Unknown network type: {network_type}")
+                total_loss += loss.item()
+                all_preds.extend(outputs.cpu().numpy())
+                all_targets.extend(batch_y.cpu().numpy())
 
-    @staticmethod
-    def get_default_config(network_type: str) -> dict:
-        """Get default configuration for a network type"""
-        configs = {
-            "mlp": {
-                "hidden_dims": [512, 256, 128],
-                "dropout": 0.3,
-                "activation": "relu",
-                "batch_norm": True
-            },
-            "residual_mlp": {
-                "hidden_dim": 512,
-                "num_layers": 4,
-                "dropout": 0.3,
-                "activation": "relu"
-            },
-            "attention": {
-                "hidden_dim": 256,
-                "num_heads": 8,
-                "num_layers": 2,
-                "dropout": 0.1
-            },
-            "ensemble": {
-                "models_config": [
-                    {"type": "mlp", "hidden_dims": [512, 256, 128], "dropout": 0.3},
-                    {"type": "residual_mlp", "hidden_dim": 512, "num_layers": 3},
-                    {"type": "attention", "hidden_dim": 256, "num_heads": 8}
-                ],
-                "ensemble_method": "mean"
-            }
+        avg_loss = total_loss / len(data_loader)
+        metrics = self._calculate_metrics(all_targets, all_preds)
+
+        return avg_loss, metrics
+
+    def _calculate_metrics(self, targets: List[float], predictions: List[float]) -> Dict:
+        """Calculate evaluation metrics"""
+        targets = np.array(targets)
+        predictions = np.array(predictions)
+
+        return {
+            'mse': mean_squared_error(targets, predictions),
+            'mae': mean_absolute_error(targets, predictions),
+            'rmse': np.sqrt(mean_squared_error(targets, predictions)),
+            'r2': r2_score(targets, predictions)
         }
 
-        return configs.get(network_type, {})
+    def predict(self,
+                pairs: List[Tuple[str, str]],
+                batch_size: int = 32,
+                return_numpy: bool = True) -> Union[np.ndarray, torch.Tensor]:
+        """
+        Predict binding strengths for new pairs
+
+        Args:
+            pairs: List of (glycan_iupac, protein_sequence) tuples
+            batch_size: Batch size for processing
+            return_numpy: Whether to return numpy array
+
+        Returns:
+            Predicted binding strengths
+        """
+        if not self.is_fitted:
+            raise ValueError("Model must be trained before making predictions")
+
+        logger.info(f"Predicting binding strengths for {len(pairs)} pairs...")
+
+        # Generate embeddings
+        embeddings = self.embedder.embed_pairs(pairs, batch_size=batch_size, return_numpy=False)
+
+        # Make predictions
+        self.model.eval()
+        predictions = []
+
+        with torch.no_grad():
+            for i in range(0, len(embeddings), batch_size):
+                batch = embeddings[i:i+batch_size].to(self.device)
+                pred = self.model(batch).squeeze()
+                predictions.append(pred)
+
+        predictions = torch.cat(predictions, dim=0)
+
+        # Denormalize if scaler was used
+        if hasattr(self.scaler, 'scale_'):
+            predictions_np = predictions.cpu().numpy().reshape(-1, 1)
+            predictions_np = self.scaler.inverse_transform(predictions_np).flatten()
+            predictions = torch.FloatTensor(predictions_np)
+
+        if return_numpy:
+            return predictions.cpu().numpy()
+        else:
+            return predictions
+
+    def evaluate(self, data_loader: DataLoader) -> Dict:
+        """Evaluate model on a dataset"""
+        _, metrics = self._eval_epoch(data_loader)
+        return metrics
+
+    def plot_training_history(self, save_path: Optional[str] = None):
+        """Plot training history"""
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+
+        # Loss curves
+        axes[0, 0].plot(self.training_history['train_loss'], label='Train Loss')
+        axes[0, 0].plot(self.training_history['val_loss'], label='Val Loss')
+        axes[0, 0].set_title('Loss Curves')
+        axes[0, 0].set_xlabel('Epoch')
+        axes[0, 0].set_ylabel('Loss')
+        axes[0, 0].legend()
+
+        # R² curves
+        train_r2 = [m['r2'] for m in self.training_history['train_metrics']]
+        val_r2 = [m['r2'] for m in self.training_history['val_metrics']]
+        axes[0, 1].plot(train_r2, label='Train R²')
+        axes[0, 1].plot(val_r2, label='Val R²')
+        axes[0, 1].set_title('R² Curves')
+        axes[0, 1].set_xlabel('Epoch')
+        axes[0, 1].set_ylabel('R²')
+        axes[0, 1].legend()
+
+        # MAE curves
+        train_mae = [m['mae'] for m in self.training_history['train_metrics']]
+        val_mae = [m['mae'] for m in self.training_history['val_metrics']]
+        axes[1, 0].plot(train_mae, label='Train MAE')
+        axes[1, 0].plot(val_mae, label='Val MAE')
+        axes[1, 0].set_title('MAE Curves')
+        axes[1, 0].set_xlabel('Epoch')
+        axes[1, 0].set_ylabel('MAE')
+        axes[1, 0].legend()
+
+        # RMSE curves
+        train_rmse = [m['rmse'] for m in self.training_history['train_metrics']]
+        val_rmse = [m['rmse'] for m in self.training_history['val_metrics']]
+        axes[1, 1].plot(train_rmse, label='Train RMSE')
+        axes[1, 1].plot(val_rmse, label='Val RMSE')
+        axes[1, 1].set_title('RMSE Curves')
+        axes[1, 1].set_xlabel('Epoch')
+        axes[1, 1].set_ylabel('RMSE')
+        axes[1, 1].legend()
+
+        plt.tight_layout()
+
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            logger.info(f"Saved training history plot to {save_path}")
+
+        plt.show()
+
+    def save_model(self, path: str):
+        """Save model and configuration"""
+        save_dict = {
+            'model_state_dict': self.model.state_dict(),
+            'network_type': self.network_type,
+            'network_config': self.network_config,
+            'embedding_dim': self.embedding_dim,
+            'scaler': self.scaler,
+            'training_history': self.training_history,
+            'is_fitted': self.is_fitted
+        }
+
+        torch.save(save_dict, path)
+        logger.info(f"Saved model to {path}")
+
+    def load_model(self, path: str):
+        """Load model and configuration"""
+        save_dict = torch.load(path, map_location=self.device)
+
+        # Recreate model with saved configuration
+        self.network_type = save_dict['network_type']
+        self.network_config = save_dict['network_config']
+        self.embedding_dim = save_dict['embedding_dim']
+
+        self.model = BindingStrengthNetworkFactory.create_network(
+            self.network_type, self.embedding_dim, **self.network_config
+        ).to(self.device)
+
+        # Load state
+        self.model.load_state_dict(save_dict['model_state_dict'])
+        self.scaler = save_dict['scaler']
+        self.training_history = save_dict['training_history']
+        self.is_fitted = save_dict['is_fitted']
+
+        logger.info(f"Loaded model from {path}")
+
+
+def load_data_from_file(file_path: str) -> Tuple[List[Tuple[str, str]], List[float]]:
+    """
+    Load glycan-protein pairs and binding strengths from file
+    Assumes file format with columns: glycan_iupac, protein_sequence, binding_strength
+
+    Args:
+        file_path: Path to data file (CSV, TSV, or JSON)
+
+    Returns:
+        Tuple of (pairs, strengths)
+    """
+    file_path = Path(file_path)
+
+    if file_path.suffix.lower() == '.json':
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+        pairs = [(item['glycan_iupac'], item['protein_sequence']) for item in data]
+        strengths = [item['binding_strength'] for item in data]
+
+    elif file_path.suffix.lower() in ['.csv', '.tsv']:
+        separator = ',' if file_path.suffix.lower() == '.csv' else '\t'
+        df = pd.read_csv(file_path, separator=separator)
+        pairs = list(zip(df['glycan_iupac'], df['protein_sequence']))
+        strengths = df['binding_strength'].tolist()
+
+    else:
+        raise ValueError(f"Unsupported file format: {file_path.suffix}")
+
+    logger.info(f"Loaded {len(pairs)} pairs from {file_path}")
+    return pairs, strengths
 
 
 if __name__ == "__main__":
     # Example usage
-    input_dim = 2560  # Example dimension for concatenated embeddings
+    vocab_path = "GlycanEmbedder_Package/glycoword_vocab.pkl"
 
-    # Test different network architectures
-    networks = {
-        "MLP": MLPRegressor(input_dim),
-        "Residual MLP": ResidualMLPRegressor(input_dim),
-        "Attention": AttentionRegressor(input_dim),
-    }
+    # Example pairs and binding strengths (dummy data)
+    pairs = [
+        ("Gal(a1-3)[Fuc(a1-2)]Gal(b1-4)GlcNAc",
+         "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG"),
+        ("Man(a1-3)[Man(a1-6)]Man(b1-4)GlcNAc(b1-4)GlcNAc",
+         "KALTARQQEVFDLIRDHISQTGMPPTRAEIAQRLGFRSPNAAEEHLKALARKGVIEIVSGASRGIRLLQEE"),
+        ("Neu5Ac(a2-3)Gal(b1-4)Glc",
+         "MEEPQSDPSVEPPLSQETFSDLWKLLPENNVLSPLPSQAMDDLMLSPDDIEQWFTEDPGP")
+    ] * 50  # Repeat for more samples
 
-    # Test with random input
-    batch_size = 32
-    x = torch.randn(batch_size, input_dim)
+    # Generate dummy binding strengths
+    np.random.seed(42)
+    strengths = np.random.normal(0.5, 0.2, len(pairs)).tolist()
 
-    for name, network in networks.items():
-        output = network(x)
-        print(f"{name}: Input {x.shape} -> Output {output.shape}")
-        print(f"  Parameters: {sum(p.numel() for p in network.parameters())}")
+    # Example 1: Simple MLP predictor
+    print("Example 1: Training MLP predictor")
+    predictor = BindingStrengthPredictor(
+        protein_model="650M",
+        protein_model_dir="resource/esm-model-weights",
+        glycan_method="lstm",
+        glycan_vocab_path=vocab_path,
+        fusion_method="concat",
+        network_type="mlp",
+        network_config={
+            "hidden_dims": [512, 256, 128],
+            "dropout": 0.3,
+            "activation": "relu"
+        }
+    )
 
-    # Test ensemble
-    ensemble_config = BindingStrengthNetworkFactory.get_default_config("ensemble")
-    ensemble = BindingStrengthNetworkFactory.create_network("ensemble", input_dim, **ensemble_config)
-    ensemble_output = ensemble(x)
-    print(f"Ensemble: Input {x.shape} -> Output {ensemble_output.shape}")
-    print(f"  Parameters: {sum(p.numel() for p in ensemble.parameters())}")
+    # Prepare data
+    data_loaders = predictor.prepare_data(
+        pairs, strengths,
+        batch_size=16,
+        val_split=0.2,
+        test_split=0.1
+    )
+
+    # Train model
+    history = predictor.train(
+        data_loaders,
+        num_epochs=20,
+        learning_rate=1e-3,
+        patience=5,
+        scheduler_config={'type': 'reduce_on_plateau', 'patience': 3, 'factor': 0.5}
+    )
+
+    # Evaluate on test set
+    test_metrics = predictor.evaluate(data_loaders['test'])
+    print(f"Test metrics: {test_metrics}")
+
+    # Make predictions on new data
+    new_pairs = pairs[:5]
+    predictions = predictor.predict(new_pairs)
+    print(f"Predictions for first 5 pairs: {predictions}")
+
+    # Plot training history
+    predictor.plot_training_history()
+
+    # Save model
+    predictor.save_model("binding_strength_model.pth")
+
+    print("\nExample completed successfully!")
