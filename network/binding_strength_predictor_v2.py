@@ -473,7 +473,7 @@ class EnhancedBindingStrengthPredictor:
 
     def _predict_original(self, pairs, batch_size, return_numpy):
         """Original prediction method using embedder"""
-        from Integrated_Embedder import GlycanProteinPairEmbedder
+        from embedder.Integrated_Embedder import GlycanProteinPairEmbedder
 
         # Initialize embedder if needed
         embedder = GlycanProteinPairEmbedder(
