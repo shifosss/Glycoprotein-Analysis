@@ -6,8 +6,8 @@ using various methods including LSTM, GCN for glycans and ESM2 for proteins.
 """
 
 # Import main components from submodules
-from .Protein_Sequence_Embedder import ProteinEmbedderFactory
-from .GlycanEmbedder_Package.glycan_embedder import GlycanEmbedder
+from .Protein_Sequence_Embedder import *
+from .GlycanEmbedder_Package.glycan_embedder import *
 from Integrated_Embedder import *
 
 # Define what should be imported with "from embedder import *"

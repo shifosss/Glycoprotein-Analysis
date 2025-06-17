@@ -8,13 +8,15 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import numpy as np
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Union
 import logging
 from pathlib import Path
 import pickle
+import hashlib
+import os
 
-from preprocessing.embedding_preprocessor import EmbeddingPreprocessor
-from preprocessing.clustering_splitter import create_clustered_splits
+from embedding_preprocessor import EmbeddingPreprocessor
+from clustering_splitter import ProteinClusteringSplitter, create_clustered_splits
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -61,6 +63,7 @@ class PrecomputedGlycanProteinDataset(Dataset):
     def __getitem__(self, idx):
         """
         Load precomputed embeddings and combine them
+        Keep data on CPU to be compatible with DataLoader pin_memory
         """
         glycan_iupac, protein_sequence = self.pairs[idx]
 
@@ -77,7 +80,7 @@ class PrecomputedGlycanProteinDataset(Dataset):
         protein_emb = np.load(protein_path)
         glycan_emb = np.load(glycan_path)
 
-        # Convert to tensors and normalize
+        # Convert to tensors and normalize (keep on CPU)
         protein_emb = torch.FloatTensor(protein_emb)
         glycan_emb = torch.FloatTensor(glycan_emb)
 
@@ -91,9 +94,8 @@ class PrecomputedGlycanProteinDataset(Dataset):
             # For attention fusion, we still concatenate here and let the model handle it
             combined_emb = torch.cat([glycan_emb, protein_emb], dim=0)
 
-        # Transfer to target device
-        combined_emb = combined_emb.to(self.device)
-        target = self.targets[idx].to(self.device)
+        # Keep data on CPU - will be moved to device by DataLoader or in training loop
+        target = self.targets[idx]
 
         return combined_emb, target
 
@@ -132,6 +134,7 @@ class EnhancedGlycanProteinDataLoader:
         """
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.embedder = embedder
+        self.data_path = data_path  # Store the original data path
         self.protein_col = protein_col
         self.sequence_col = sequence_col
         self.cache_dir = Path(cache_dir)
@@ -161,7 +164,7 @@ class EnhancedGlycanProteinDataLoader:
         # Check if embedder is provided for backward compatibility
         if embedder is None and not use_precomputed:
             logger.warning("No embedder provided and precomputed embeddings disabled. "
-                           "You'll need to set embedder or enable precomputed embeddings.")
+                          "You'll need to set embedder or enable precomputed embeddings.")
             return
 
         # Load and process data
@@ -231,11 +234,13 @@ class EnhancedGlycanProteinDataLoader:
         return glycan_cols
 
     def setup_precomputed_embeddings(self,
-                                     protein_model: str = "650M",
-                                     glycan_method: str = "lstm",
-                                     glycan_vocab_path: Optional[str] = None,
-                                     force_recompute: bool = False,
-                                     **kwargs):
+                                   protein_model: str = "650M",
+                                   glycan_method: str = "lstm",
+                                   glycan_vocab_path: Optional[str] = None,
+                                   glycan_hidden_dims: Optional[List[int]] = None,
+                                   glycan_readout: str = "mean",
+                                   force_recompute: bool = False,
+                                   **kwargs):
         """
         Setup precomputed embeddings
 
@@ -243,6 +248,8 @@ class EnhancedGlycanProteinDataLoader:
             protein_model: ESM2 model size
             glycan_method: Glycan embedding method
             glycan_vocab_path: Path to glycan vocabulary
+            glycan_hidden_dims: Hidden dimensions for glycan embedder
+            glycan_readout: Readout function for graph-based methods
             force_recompute: Whether to recompute existing embeddings
             **kwargs: Additional arguments for preprocessor
         """
@@ -269,27 +276,48 @@ class EnhancedGlycanProteinDataLoader:
             protein_model=protein_model,
             glycan_method=glycan_method,
             glycan_vocab_path=glycan_vocab_path,
+            glycan_hidden_dims=glycan_hidden_dims,
+            glycan_readout=glycan_readout,
             device=self.device,
             **kwargs
         )
 
-        # Preprocess embeddings
-        protein_mapping, glycan_mapping = self.preprocessor.preprocess_dataset(
-            data_path=str(self.data),  # Pass data directly
-            protein_col=self.protein_col,
-            sequence_col=self.sequence_col,
-            exclude_cols=self.exclude_cols,
-            force_recompute=force_recompute
+        # Get unique sequences from loaded data
+        unique_proteins = self.data[self.sequence_col].unique().tolist()
+        unique_glycans = self.glycan_columns  # Assuming column names are IUPAC sequences
+
+        logger.info(f"Found {len(unique_proteins)} unique proteins and {len(unique_glycans)} unique glycans")
+
+        # Precompute embeddings
+        protein_mapping = self.preprocessor.precompute_protein_embeddings(
+            unique_proteins, force_recompute=force_recompute
+        )
+
+        glycan_mapping = self.preprocessor.precompute_glycan_embeddings(
+            unique_glycans, force_recompute=force_recompute
         )
 
         self.protein_cache_mapping = protein_mapping
         self.glycan_cache_mapping = glycan_mapping
 
+        # Save mappings for future use
+        with open(mapping_file, 'wb') as f:
+            pickle.dump({
+                'protein_mapping': protein_mapping,
+                'glycan_mapping': glycan_mapping,
+                'glycan_params': {
+                    'method': glycan_method,
+                    'vocab_path': glycan_vocab_path,
+                    'hidden_dims': glycan_hidden_dims,
+                    'readout': glycan_readout
+                }
+            }, f)
+
         logger.info("Precomputed embeddings setup complete")
 
     def setup_clustering_splits(self,
-                                save_splitter_path: Optional[str] = None,
-                                plot_analysis: bool = False) -> Dict[str, List[str]]:
+                               save_splitter_path: Optional[str] = None,
+                               plot_analysis: bool = False) -> Dict[str, List[str]]:
         """
         Setup clustering-based data splits
 
@@ -306,18 +334,19 @@ class EnhancedGlycanProteinDataLoader:
 
         if not self.use_precomputed or self.protein_cache_mapping is None:
             raise ValueError("Clustering requires precomputed protein embeddings. "
-                             "Run setup_precomputed_embeddings() first.")
+                           "Run setup_precomputed_embeddings() first.")
 
         logger.info("Setting up clustering-based splits...")
 
         # Get unique protein sequences and their embeddings
         unique_proteins = self.data[self.sequence_col].unique().tolist()
 
-        # Load protein embeddings
+        # Ensure preprocessor is available for loading embeddings
         if self.preprocessor is None:
             # Create minimal preprocessor for loading embeddings
             self.preprocessor = EmbeddingPreprocessor(cache_dir=str(self.cache_dir))
 
+        # Load protein embeddings
         protein_embeddings = self.preprocessor.load_cached_embeddings(
             unique_proteins, self.protein_cache_mapping
         )
@@ -380,9 +409,9 @@ class EnhancedGlycanProteinDataLoader:
         return splits
 
     def create_pairs_dataset(self,
-                             glycan_subset: Optional[List[str]] = None,
-                             protein_subset: Optional[List[str]] = None,
-                             max_pairs: Optional[int] = None) -> Tuple[List[Tuple[str, str]], List[float]]:
+                           glycan_subset: Optional[List[str]] = None,
+                           protein_subset: Optional[List[str]] = None,
+                           max_pairs: Optional[int] = None) -> Tuple[List[Tuple[str, str]], List[float]]:
         """Create glycan-protein pairs and binding strengths"""
         if self.data is None:
             raise ValueError("Data not loaded.")
@@ -418,15 +447,15 @@ class EnhancedGlycanProteinDataLoader:
         return pairs, strengths
 
     def create_pytorch_dataloader(self,
-                                  protein_subset: Optional[List[str]] = None,
-                                  glycan_subset: Optional[List[str]] = None,
-                                  batch_size: int = 32,
-                                  shuffle: bool = True,
-                                  num_workers: int = 0,
-                                  normalize_targets: bool = True,
-                                  max_pairs: Optional[int] = None,
-                                  fusion_method: str = "concat",
-                                  **kwargs) -> Tuple[DataLoader, Optional[torch.nn.Module]]:
+                                protein_subset: Optional[List[str]] = None,
+                                glycan_subset: Optional[List[str]] = None,
+                                batch_size: int = 32,
+                                shuffle: bool = True,
+                                num_workers: int = 0,
+                                normalize_targets: bool = True,
+                                max_pairs: Optional[int] = None,
+                                fusion_method: str = "concat",
+                                **kwargs) -> Tuple[DataLoader, Optional[torch.nn.Module]]:
         """
         Create PyTorch DataLoader with precomputed embeddings or fallback to original method
         """
@@ -485,28 +514,50 @@ class EnhancedGlycanProteinDataLoader:
             batch_size=batch_size,
             shuffle=shuffle,
             num_workers=num_workers,
-            pin_memory=(self.device != "cpu")
+            pin_memory=(self.device.startswith("cuda"))  # Only pin memory for GPU usage
         )
 
         logger.info(f"Created DataLoader: {len(dataset)} samples, batch_size={batch_size}")
         return dataloader, target_scaler
 
     def create_train_val_test_loaders(self,
-                                      batch_size: int = 32,
-                                      normalize_targets: bool = True,
-                                      max_pairs_per_split: Optional[int] = None,
-                                      fusion_method: str = "concat",
-                                      **kwargs) -> Dict[str, DataLoader]:
+                                    batch_size: int = 32,
+                                    normalize_targets: bool = True,
+                                    max_pairs_per_split: Optional[int] = None,
+                                    fusion_method: str = "concat",
+                                    # Preprocessing parameters
+                                    protein_model: str = "650M",
+                                    glycan_method: str = "lstm",
+                                    glycan_vocab_path: Optional[str] = None,
+                                    glycan_hidden_dims: Optional[List[int]] = None,
+                                    glycan_readout: str = "mean",
+                                    force_recompute: bool = False,
+                                    # Clustering parameters
+                                    save_splitter_path: Optional[str] = None,
+                                    plot_analysis: bool = False,
+                                    **kwargs) -> Dict[str, DataLoader]:
         """
         Create train/validation/test DataLoaders with enhanced splitting
         """
         # Setup precomputed embeddings if enabled
         if self.use_precomputed:
-            self.setup_precomputed_embeddings(**kwargs)
+            preprocessing_kwargs = {
+                'protein_model': protein_model,
+                'glycan_method': glycan_method,
+                'glycan_vocab_path': glycan_vocab_path,
+                'glycan_hidden_dims': glycan_hidden_dims,
+                'glycan_readout': glycan_readout,
+                'force_recompute': force_recompute
+            }
+            self.setup_precomputed_embeddings(**preprocessing_kwargs)
 
         # Get protein splits (clustering or random)
         if self.use_clustering:
-            protein_splits = self.setup_clustering_splits(**kwargs)
+            clustering_kwargs = {
+                'save_splitter_path': save_splitter_path,
+                'plot_analysis': plot_analysis
+            }
+            protein_splits = self.setup_clustering_splits(**clustering_kwargs)
         else:
             protein_splits = self.split_by_protein(**self.clustering_params)
 
@@ -520,15 +571,24 @@ class EnhancedGlycanProteinDataLoader:
 
             logger.info(f"Creating {split_name} DataLoader with {len(proteins)} proteins")
 
-            dataloader, scaler = self.create_pytorch_dataloader(
-                protein_subset=proteins,
-                batch_size=batch_size,
-                shuffle=(split_name == 'train'),
-                normalize_targets=normalize_targets,
-                max_pairs=max_pairs_per_split,
-                fusion_method=fusion_method,
-                **kwargs
-            )
+            # Prepare dataloader-specific kwargs
+            dataloader_kwargs = {
+                'protein_subset': proteins,
+                'batch_size': batch_size,
+                'shuffle': (split_name == 'train'),
+                'normalize_targets': normalize_targets,
+                'max_pairs': max_pairs_per_split,
+                'fusion_method': fusion_method
+            }
+
+            # Add any additional kwargs that are relevant for dataloader creation
+            for key, value in kwargs.items():
+                if key not in ['save_splitter_path', 'plot_analysis', 'protein_model',
+                              'glycan_method', 'glycan_vocab_path', 'glycan_hidden_dims',
+                              'glycan_readout', 'force_recompute']:
+                    dataloader_kwargs[key] = value
+
+            dataloader, scaler = self.create_pytorch_dataloader(**dataloader_kwargs)
 
             dataloaders[split_name] = dataloader
             target_scalers[split_name] = scaler
@@ -585,19 +645,25 @@ class EnhancedGlycanProteinDataLoader:
 
 # Enhanced convenience function
 def create_enhanced_glycan_dataloaders(data_path: str = "data/v12_glycan_binding.csv",
-                                       embedder=None,
-                                       test_size: float = 0.2,
-                                       val_size: float = 0.1,
-                                       batch_size: int = 32,
-                                       max_pairs: Optional[int] = None,
-                                       device: Optional[str] = None,
-                                       cache_dir: str = "preprocessed_embeddings",
-                                       use_precomputed: bool = True,
-                                       use_clustering: bool = True,
-                                       n_clusters: int = 10,
-                                       protein_model: str = "650M",
-                                       glycan_method: str = "lstm",
-                                       **kwargs) -> Dict[str, DataLoader]:
+                                     embedder=None,
+                                     test_size: float = 0.2,
+                                     val_size: float = 0.1,
+                                     batch_size: int = 32,
+                                     max_pairs: Optional[int] = None,
+                                     device: Optional[str] = None,
+                                     cache_dir: str = "preprocessed_embeddings",
+                                     use_precomputed: bool = True,
+                                     use_clustering: bool = True,
+                                     n_clusters: int = 10,
+                                     protein_model: str = "650M",
+                                     glycan_method: str = "lstm",
+                                     glycan_vocab_path: Optional[str] = None,
+                                     glycan_hidden_dims: Optional[List[int]] = None,
+                                     glycan_readout: str = "mean",
+                                     force_recompute: bool = False,
+                                     save_splitter_path: Optional[str] = None,
+                                     plot_analysis: bool = False,
+                                     **kwargs) -> Dict[str, DataLoader]:
     """
     Enhanced convenience function with precomputed embeddings and clustering
 
@@ -615,6 +681,12 @@ def create_enhanced_glycan_dataloaders(data_path: str = "data/v12_glycan_binding
         n_clusters: Number of clusters for protein clustering
         protein_model: ESM2 model size
         glycan_method: Glycan embedding method
+        glycan_vocab_path: Path to glycan vocabulary
+        glycan_hidden_dims: Hidden dimensions for glycan embedder
+        glycan_readout: Readout function for graph-based methods
+        force_recompute: Whether to recompute existing embeddings
+        save_splitter_path: Path to save the fitted splitter
+        plot_analysis: Whether to create clustering plots
         **kwargs: Additional arguments
 
     Returns:
@@ -644,6 +716,12 @@ def create_enhanced_glycan_dataloaders(data_path: str = "data/v12_glycan_binding
         max_pairs_per_split=max_pairs,
         protein_model=protein_model,
         glycan_method=glycan_method,
+        glycan_vocab_path=glycan_vocab_path,
+        glycan_hidden_dims=glycan_hidden_dims,
+        glycan_readout=glycan_readout,
+        force_recompute=force_recompute,
+        save_splitter_path=save_splitter_path,
+        plot_analysis=plot_analysis,
         **kwargs
     )
 
@@ -656,7 +734,7 @@ if __name__ == "__main__":
     try:
         # Create enhanced DataLoaders with clustering and precomputed embeddings
         dataloaders = create_enhanced_glycan_dataloaders(
-            data_path="../data/v12_glycan_binding.csv",
+            data_path="data/v12_glycan_binding.csv",
             batch_size=16,
             max_pairs=200,  # Small for testing
             use_precomputed=True,
@@ -683,5 +761,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Error in test: {e}")
         import traceback
-
         traceback.print_exc()

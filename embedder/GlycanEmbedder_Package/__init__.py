@@ -12,7 +12,12 @@ Usage:
     embeddings = embedder.embed_glycans(glycan_list, method='sequence')
 """
 
-from .glycan_embedder import GlycanEmbedder, embed_glycans
+from .glycan_embedder import *
 
 __version__ = "1.0.0"
-__all__ = ["GlycanEmbedder", "embed_glycans"]
+__all__ = ["GlycanEmbedder",
+           "embed_glycans",
+           "GlycanGCN",
+           "GlycanLSTM",
+           "GlycanBERT"
+           ]

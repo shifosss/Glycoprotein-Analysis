@@ -14,9 +14,11 @@ import time
 import matplotlib.pyplot as plt
 
 # Import enhanced modules
-from dataloader.glycan_dataloader_cpu_v2 import EnhancedGlycanProteinDataLoader, create_enhanced_glycan_dataloaders
+from glycan_dataloader_cpu_v2 import EnhancedGlycanProteinDataLoader, create_enhanced_glycan_dataloaders
 from Integrated_Embedder import GlycanProteinPairEmbedder
 from binding_strength_networks import BindingStrengthNetworkFactory
+from embedding_preprocessor import EmbeddingPreprocessor
+from clustering_splitter import ProteinClusteringSplitter
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -369,8 +371,8 @@ def run_enhanced_pytorch_pipeline():
 
         cache_info = temp_loader.get_cache_info()
         logger.info(f"Cache: {cache_info.get('protein_embeddings', 0)} proteins, "
-                    f"{cache_info.get('glycan_embeddings', 0)} glycans, "
-                    f"{cache_info.get('total_cache_size_mb', 0):.1f} MB total")
+                   f"{cache_info.get('glycan_embeddings', 0)} glycans, "
+                   f"{cache_info.get('total_cache_size_mb', 0):.1f} MB total")
 
         # Step 3: Initialize enhanced predictor
         logger.info("Initializing enhanced predictor...")
@@ -476,8 +478,8 @@ def run_enhanced_pytorch_pipeline():
             x = np.arange(len(methods))
             width = 0.35
 
-            axes[1, 1].bar(x - width / 2, r2_scores, width, label='R²', alpha=0.7)
-            axes[1, 1].bar(x + width / 2, rmse_scores, width, label='RMSE', alpha=0.7)
+            axes[1, 1].bar(x - width/2, r2_scores, width, label='R²', alpha=0.7)
+            axes[1, 1].bar(x + width/2, rmse_scores, width, label='RMSE', alpha=0.7)
             axes[1, 1].set_xlabel('Method')
             axes[1, 1].set_ylabel('Score')
             axes[1, 1].set_title('Performance Comparison')
@@ -493,7 +495,7 @@ def run_enhanced_pytorch_pipeline():
             • Clustering-based Splits: {use_clustering}
             • Number of Clusters: {n_clusters}
             • Cache Size: {cache_info.get('total_cache_size_mb', 0):.1f} MB
-
+            
             Performance Gains:
             • Setup Time: {setup_time:.1f}s
             • Training Time: {training_time:.1f}s
@@ -501,8 +503,8 @@ def run_enhanced_pytorch_pipeline():
             """
 
             axes[1, 2].text(0.1, 0.5, features_text, transform=axes[1, 2].transAxes,
-                            fontsize=10, verticalalignment='center',
-                            bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.7))
+                           fontsize=10, verticalalignment='center',
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.7))
             axes[1, 2].set_title('Enhancement Summary')
             axes[1, 2].axis('off')
 
@@ -544,7 +546,7 @@ def precompute_embeddings_only():
     print("Precomputing Embeddings Only")
     print("=" * 30)
 
-    from preprocessing.embedding_preprocessor import preprocess_embeddings
+    from embedding_preprocessor import preprocess_embeddings
 
     vocab_path = "GlycanEmbedder_Package/glycoword_vocab.pkl"
     data_path = "data/v12_glycan_binding.csv"
