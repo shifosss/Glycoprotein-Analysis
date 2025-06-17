@@ -12,7 +12,7 @@ import logging
 
 # Import the embedders
 from Protein_Sequence_Embedder import ProteinEmbedderFactory
-from GlycanEmbedder_Package.glycan_embedder import GlycanEmbedder, GlycanGCN, GlycanLSTM, GlycanBERT
+from embedder.GlycanEmbedder_Package import GlycanEmbedder, GlycanGCN, GlycanLSTM, GlycanBERT
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -362,7 +362,7 @@ if __name__ == "__main__":
     embeddings_concat = embed_glycan_protein_pairs(
         pairs[:1],
         protein_model="650M",
-        protein_model_dir="resources/esm-model-weights",
+        protein_model_dir="../resources/esm-model-weights",
         glycan_method="cnn",
         glycan_hidden_dims=[512, 256, 1280],  # End with protein dimension
         glycan_readout="dual",  # Use dual readout (mean + max)
@@ -376,7 +376,7 @@ if __name__ == "__main__":
     embeddings_concat = embed_glycan_protein_pairs(
         pairs[:1],
         protein_model="650M",
-        protein_model_dir="resources/esm-model-weights",
+        protein_model_dir="../resources/esm-model-weights",
         glycan_method="cnn",
         glycan_hidden_dims=[512, 256, 1280],  # End with protein dimension
         glycan_readout="dual",  # Use dual readout (mean + max)

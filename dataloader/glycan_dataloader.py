@@ -1,7 +1,6 @@
 """
-PyTorch DataLoader for Glycan-Protein Binding Data (CPU Version)
-CPU-based data loading to avoid CUDA OOM issues
-Uses identical class names and method signatures as the original GPU version
+PyTorch DataLoader for Glycan-Protein Binding Data
+Efficient GPU-based data loading with caching and memory management
 """
 import torch
 import torch.nn as nn
@@ -21,9 +20,8 @@ logger = logging.getLogger(__name__)
 
 class CachedGlycanProteinDataset(Dataset):
     """
-    CPU-based PyTorch Dataset that loads embeddings from cache files
-    Loads data to CPU memory and transfers to GPU only on demand
-    Uses same class name as GPU version but different internal implementation
+    Memory-efficient PyTorch Dataset that loads embeddings from cache files
+    Only loads data to GPU when needed, preventing OOM errors
     """
 
     def __init__(self,
@@ -32,49 +30,61 @@ class CachedGlycanProteinDataset(Dataset):
                  device: Optional[str] = None,
                  gpu_batch_size: int = 256):
         """
-        Initialize dataset with cached embedding files (CPU-based implementation)
+        Initialize dataset with cached embedding files
 
         Args:
             cache_files: List of paths to cached embedding files
             targets: Tensor of binding strengths
             device: Device to load data to
-            gpu_batch_size: Ignored in CPU version (kept for API compatibility)
+            gpu_batch_size: Number of embeddings to keep in GPU memory at once
         """
         self.cache_files = cache_files
         self.targets = targets.cpu()  # Keep targets on CPU
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-        # gpu_batch_size parameter is ignored in CPU version but kept for API compatibility
         self.gpu_batch_size = gpu_batch_size
+
+        # GPU memory cache - keeps only recent embeddings
+        self.gpu_cache = {}
+        self.gpu_cache_order = []
 
         assert len(self.cache_files) == len(self.targets), "Cache files and targets must have same length"
 
-        logger.info(f"Initialized CPU-based cached dataset: {len(self.cache_files)} samples")
-        logger.info(f"Target device for transfers: {self.device}")
+        logger.info(f"Initialized cached dataset: {len(self.cache_files)} samples")
+        logger.info(f"GPU batch size: {gpu_batch_size} (max embeddings in GPU memory)")
 
     def __len__(self):
         return len(self.cache_files)
 
     def __getitem__(self, idx):
-        """
-        Load embedding from disk to CPU, then transfer to device on demand
-        This follows standard PyTorch DataLoader patterns to avoid GPU memory accumulation
-        """
-        # Load from disk to CPU memory
-        embedding = np.load(self.cache_files[idx])
-        embedding = torch.FloatTensor(embedding)  # Load to CPU first
+        # Check if embedding is in GPU cache
+        if idx in self.gpu_cache:
+            embedding = self.gpu_cache[idx]
+        else:
+            # Load from disk
+            embedding = np.load(self.cache_files[idx])
+            embedding = torch.FloatTensor(embedding).to(self.device)
 
-        # Transfer to target device only when accessed
-        embedding = embedding.to(self.device)
+            # Add to GPU cache with memory management
+            self._add_to_gpu_cache(idx, embedding)
+
         target = self.targets[idx].to(self.device)
-
         return embedding, target
+
+    def _add_to_gpu_cache(self, idx: int, embedding: torch.Tensor):
+        """Add embedding to GPU cache with LRU eviction"""
+        # Remove oldest if cache is full
+        if len(self.gpu_cache) >= self.gpu_batch_size:
+            oldest_idx = self.gpu_cache_order.pop(0)
+            del self.gpu_cache[oldest_idx]
+
+        # Add new embedding
+        self.gpu_cache[idx] = embedding
+        self.gpu_cache_order.append(idx)
 
 
 class GlycanProteinDataLoader:
     """
-    CPU-based PyTorch DataLoader with embedding caching
-    Uses same class name and methods as GPU version but CPU-based implementation
+    Efficient PyTorch DataLoader with embedding caching and memory management
     """
 
     def __init__(self,
@@ -86,7 +96,7 @@ class GlycanProteinDataLoader:
                  device: Optional[str] = None,
                  cache_dir: str = "embedding_cache"):
         """
-        Initialize the DataLoader with caching (CPU-based implementation)
+        Initialize the DataLoader with caching
 
         Args:
             data_path: Path to CSV/Excel file
@@ -141,7 +151,7 @@ class GlycanProteinDataLoader:
 
             # Get glycan columns (numeric columns only)
             potential_glycan_cols = [col for col in data.columns
-                                     if col not in {self.protein_col, self.sequence_col} | set(self.exclude_cols)]
+                                   if col not in {self.protein_col, self.sequence_col} | set(self.exclude_cols)]
 
             # Filter to numeric columns only
             glycan_cols = []
@@ -189,7 +199,7 @@ class GlycanProteinDataLoader:
         return self.cache_dir / f"{cache_key}.npy"
 
     def _load_or_compute_embeddings(self, pairs: List[Tuple[str, str]],
-                                    embedding_batch_size: int = 32) -> List[str]:
+                                  embedding_batch_size: int = 32) -> List[str]:
         """
         Load embeddings from cache or compute and cache them
         Returns list of cache file paths
@@ -197,7 +207,6 @@ class GlycanProteinDataLoader:
         cache_files = []
         pairs_to_compute = []
         indices_to_compute = []
-        return_numpy_flag = True
 
         # Check which embeddings are already cached
         for i, (glycan, protein) in enumerate(pairs):
@@ -223,7 +232,7 @@ class GlycanProteinDataLoader:
                 batch_embeddings = self.embedder.embed_pairs(
                     batch_pairs,
                     batch_size=embedding_batch_size,
-                    return_numpy=return_numpy_flag
+                    return_numpy=True
                 )
 
                 # Save each embedding to cache
@@ -232,10 +241,7 @@ class GlycanProteinDataLoader:
                     cache_path = self._get_cache_path(cache_key)
 
                     # Save embedding
-                    if return_numpy_flag:
-                        np.save(cache_path, batch_embeddings[j])
-                    else:
-                        np.save(cache_path, batch_embeddings[j].cpu())
+                    np.save(cache_path, batch_embeddings[j])
 
                     # Update cache_files list
                     original_idx = batch_indices[j]
@@ -257,15 +263,14 @@ class GlycanProteinDataLoader:
                 import gc
                 gc.collect()
 
-                logger.info(
-                    f"Cached embeddings batch {i // embedding_batch_size + 1}/{(len(pairs_to_compute) - 1) // embedding_batch_size + 1}")
+                logger.info(f"Cached embeddings batch {i//embedding_batch_size + 1}/{(len(pairs_to_compute)-1)//embedding_batch_size + 1}")
 
         return cache_files
 
     def create_pairs_dataset(self,
-                             glycan_subset: Optional[List[str]] = None,
-                             protein_subset: Optional[List[str]] = None,
-                             max_pairs: Optional[int] = None) -> Tuple[List[Tuple[str, str]], List[float]]:
+                           glycan_subset: Optional[List[str]] = None,
+                           protein_subset: Optional[List[str]] = None,
+                           max_pairs: Optional[int] = None) -> Tuple[List[Tuple[str, str]], List[float]]:
         """Create glycan-protein pairs and binding strengths"""
         if self.data is None:
             raise ValueError("Data not loaded. Embedder was None during initialization.")
@@ -301,9 +306,9 @@ class GlycanProteinDataLoader:
         return pairs, strengths
 
     def split_by_protein(self,
-                         test_size: float = 0.2,
-                         val_size: float = 0.1,
-                         random_state: int = 42) -> Dict[str, List[str]]:
+                        test_size: float = 0.2,
+                        val_size: float = 0.1,
+                        random_state: int = 42) -> Dict[str, List[str]]:
         """Split proteins for train/val/test (prevents data leakage)"""
         from sklearn.model_selection import train_test_split
 
@@ -312,7 +317,7 @@ class GlycanProteinDataLoader:
         logger.info(f"Splitting {len(unique_proteins)} unique protein sequences:")
         logger.info(f"  Test size: {test_size:.1%}")
         logger.info(f"  Val size: {val_size:.1%}")
-        logger.info(f"  Train size: {1 - test_size - val_size:.1%}")
+        logger.info(f"  Train size: {1-test_size-val_size:.1%}")
 
         # First split: separate test set
         train_val_proteins, test_proteins = train_test_split(
@@ -342,18 +347,17 @@ class GlycanProteinDataLoader:
         return splits
 
     def create_pytorch_dataloader(self,
-                                  protein_subset: Optional[List[str]] = None,
-                                  glycan_subset: Optional[List[str]] = None,
-                                  batch_size: int = 32,
-                                  shuffle: bool = True,
-                                  num_workers: int = 0,
-                                  normalize_targets: bool = True,
-                                  embedding_batch_size: int = 32,
-                                  max_pairs: Optional[int] = None,
-                                  gpu_memory_limit: int = 512) -> Tuple[DataLoader, Optional[torch.nn.Module]]:
+                                protein_subset: Optional[List[str]] = None,
+                                glycan_subset: Optional[List[str]] = None,
+                                batch_size: int = 32,
+                                shuffle: bool = True,
+                                num_workers: int = 0,
+                                normalize_targets: bool = True,
+                                embedding_batch_size: int = 32,
+                                max_pairs: Optional[int] = None,
+                                gpu_memory_limit: int = 512) -> Tuple[DataLoader, Optional[torch.nn.Module]]:
         """
-        Create PyTorch DataLoader with CPU-based dataset
-        gpu_memory_limit parameter is kept for API compatibility but ignored in CPU version
+        Create PyTorch DataLoader with cached embeddings and memory management
 
         Args:
             protein_subset: Proteins to include
@@ -364,7 +368,7 @@ class GlycanProteinDataLoader:
             normalize_targets: Whether to normalize binding strengths
             embedding_batch_size: Batch size for embedding computation
             max_pairs: Maximum number of pairs to use
-            gpu_memory_limit: Ignored in CPU version (API compatibility)
+            gpu_memory_limit: Max embeddings to keep in GPU memory at once
 
         Returns:
             Tuple of (DataLoader, target_scaler)
@@ -376,7 +380,7 @@ class GlycanProteinDataLoader:
             max_pairs=max_pairs
         )
 
-        logger.info(f"Processing {len(pairs)} pairs with CPU-based caching...")
+        logger.info(f"Processing {len(pairs)} pairs with caching...")
 
         # Load or compute embeddings (returns cache file paths)
         cache_files = self._load_or_compute_embeddings(pairs, embedding_batch_size)
@@ -394,39 +398,39 @@ class GlycanProteinDataLoader:
             ).flatten()
             strengths_tensor = torch.FloatTensor(strengths_normalized)
 
-        # Create CPU-based cached dataset
+        # Create cached dataset
         dataset = CachedGlycanProteinDataset(
             cache_files=cache_files,
             targets=strengths_tensor,
             device=self.device,
-            gpu_batch_size=gpu_memory_limit  # Kept for API compatibility
+            gpu_batch_size=gpu_memory_limit
         )
 
-        # Create DataLoader with pin_memory for efficient CPU->GPU transfers
+        # Create DataLoader
         dataloader = DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=shuffle,
             num_workers=num_workers,
-            pin_memory=(self.device != "cpu")  # Enable pin_memory for GPU transfers
+            pin_memory=False  # We manage GPU memory ourselves
         )
 
-        logger.info(f"Created CPU-based DataLoader: {len(dataset)} samples, batch_size={batch_size}")
+        logger.info(f"Created cached DataLoader: {len(dataset)} samples, batch_size={batch_size}")
+        logger.info(f"GPU memory limit: {gpu_memory_limit} embeddings")
 
         return dataloader, target_scaler
 
     def create_train_val_test_loaders(self,
-                                      test_size: float = 0.2,
-                                      val_size: float = 0.1,
-                                      batch_size: int = 32,
-                                      embedding_batch_size: int = 32,
-                                      normalize_targets: bool = True,
-                                      random_state: int = 42,
-                                      max_pairs_per_split: Optional[int] = None,
-                                      gpu_memory_limit: int = 512) -> Dict[str, DataLoader]:
+                                    test_size: float = 0.2,
+                                    val_size: float = 0.1,
+                                    batch_size: int = 32,
+                                    embedding_batch_size: int = 32,
+                                    normalize_targets: bool = True,
+                                    random_state: int = 42,
+                                    max_pairs_per_split: Optional[int] = None,
+                                    gpu_memory_limit: int = 512) -> Dict[str, DataLoader]:
         """
-        Create train/validation/test DataLoaders with CPU-based caching
-        gpu_memory_limit parameter is kept for API compatibility but ignored
+        Create train/validation/test DataLoaders with caching and memory management
 
         Args:
             test_size: Fraction for test set
@@ -436,7 +440,7 @@ class GlycanProteinDataLoader:
             normalize_targets: Whether to normalize targets
             random_state: Random seed
             max_pairs_per_split: Maximum pairs per split
-            gpu_memory_limit: Ignored in CPU version (API compatibility)
+            gpu_memory_limit: Max embeddings in GPU memory per dataset
 
         Returns:
             Dictionary with DataLoaders and metadata
@@ -505,21 +509,19 @@ class GlycanProteinDataLoader:
         }
 
 
-# Keep the original convenience function with same name
+# Keep the original convenience function for backward compatibility
 def create_glycan_dataloaders(data_path: str = "data/v12_glycan_binding.csv",
-                              embedder=None,
-                              test_size: float = 0.2,
-                              val_size: float = 0.1,
-                              batch_size: int = 32,
-                              embedding_batch_size: int = 32,
-                              max_pairs: Optional[int] = None,
-                              device: Optional[str] = None,
-                              cache_dir: str = "embedding_cache",
-                              gpu_memory_limit: int = 512) -> Dict[str, DataLoader]:
+                            embedder=None,
+                            test_size: float = 0.2,
+                            val_size: float = 0.1,
+                            batch_size: int = 32,
+                            embedding_batch_size: int = 32,
+                            max_pairs: Optional[int] = None,
+                            device: Optional[str] = None,
+                            cache_dir: str = "embedding_cache",
+                            gpu_memory_limit: int = 512) -> Dict[str, DataLoader]:
     """
-    Convenience function to create train/val/test DataLoaders with CPU-based caching
-    Uses same function name as GPU version but CPU-based implementation
-    gpu_memory_limit parameter is kept for API compatibility but ignored
+    Convenience function to create train/val/test DataLoaders with caching
 
     Args:
         data_path: Path to CSV/Excel data file
@@ -531,7 +533,7 @@ def create_glycan_dataloaders(data_path: str = "data/v12_glycan_binding.csv",
         max_pairs: Maximum pairs per split
         device: Computing device
         cache_dir: Directory for caching embeddings
-        gpu_memory_limit: Ignored in CPU version (API compatibility)
+        gpu_memory_limit: Max embeddings in GPU memory (prevents OOM)
 
     Returns:
         Dictionary with DataLoaders
@@ -557,8 +559,8 @@ def create_glycan_dataloaders(data_path: str = "data/v12_glycan_binding.csv",
 
 
 if __name__ == "__main__":
-    # Example usage with CPU-based caching
-    print("Testing CPU-based Glycan PyTorch DataLoader")
+    # Example usage with caching
+    print("Testing Cached Glycan PyTorch DataLoader")
 
     try:
         # Mock embedder for testing
@@ -572,14 +574,13 @@ if __name__ == "__main__":
                 embeddings = np.random.randn(n_pairs, embedding_dim).astype(np.float32)
                 return embeddings
 
-
         embedder = MockEmbedder()
 
-        # Create DataLoader with CPU-based caching
+        # Create DataLoader with caching
         loader = GlycanProteinDataLoader(
-            data_path="data/v12_glycan_binding.csv",
+            data_path="../data/v12_glycan_binding.csv",
             embedder=embedder,
-            cache_dir="test_cpu_cache"
+            cache_dir="test_cache"
         )
 
         # Check cache info
@@ -589,11 +590,12 @@ if __name__ == "__main__":
         # Create DataLoaders
         dataloaders = loader.create_train_val_test_loaders(
             batch_size=16,
-            max_pairs_per_split=100
+            max_pairs_per_split=100,
+            gpu_memory_limit=64  # Small for testing
         )
 
         # Test training loop
-        print("\nTesting CPU-based training loop:")
+        print("\nTesting cached training loop:")
         train_loader = dataloaders['train']
 
         for batch_idx, (embeddings, targets) in enumerate(train_loader):
@@ -607,10 +609,9 @@ if __name__ == "__main__":
         final_cache_info = loader.get_cache_info()
         print(f"\nFinal cache info: {final_cache_info}")
 
-        print("CPU-based DataLoader test completed successfully!")
+        print("Cached DataLoader test completed successfully!")
 
     except Exception as e:
         print(f"Error in test: {e}")
         import traceback
-
         traceback.print_exc()

@@ -9,8 +9,8 @@ from typing import List, Tuple, Union, Optional
 import logging
 
 # Import the embedders
-from Protein_Sequence_Embedder import ProteinEmbedderFactory
-from GlycanEmbedder_Package.glycan_embedder import GlycanEmbedder
+from embedder.Protein_Sequence_Embedder import ProteinEmbedderFactory
+from embedder.GlycanEmbedder_Package import GlycanEmbedder
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -252,7 +252,7 @@ if __name__ == "__main__":
         protein_model="650M",
         protein_model_dir="resources/esm-model-weights",
         glycan_method="lstm",
-        glycan_vocab_path="GlycanEmbedder_Package/glycoword_vocab.pkl",
+        glycan_vocab_path="../embedder/GlycanEmbedder_Package/glycoword_vocab.pkl",
         fusion_method="concat"
     )
     print(f"Concatenation output shape: {embeddings_concat.shape}")
@@ -265,7 +265,7 @@ if __name__ == "__main__":
         protein_model="650M",
         protein_model_dir="resources/esm-model-weights",
         glycan_method="lstm",
-        glycan_vocab_path="GlycanEmbedder_Package/glycoword_vocab.pkl",
+        glycan_vocab_path="../embedder/GlycanEmbedder_Package/glycoword_vocab.pkl",
         fusion_method="attention"
     )
     print(f"Attention output shape: {embeddings_attention.shape}")
@@ -278,7 +278,7 @@ if __name__ == "__main__":
         protein_model_dir="resources/esm-model-weights",
         glycan_method="bert",
         fusion_method="attention",
-        glycan_vocab_path="GlycanEmbedder_Package/glycoword_vocab.pkl"
+        glycan_vocab_path="../embedder/GlycanEmbedder_Package/glycoword_vocab.pkl"
     )
 
     # Get embeddings as torch tensor for direct use in models

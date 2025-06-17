@@ -195,3 +195,4 @@ cython_debug/
 
 v100_embedding_cache/
 cpu_embedding_cache/
+*_cache/

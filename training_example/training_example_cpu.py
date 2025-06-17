@@ -13,9 +13,9 @@ from tqdm import tqdm
 import time
 
 # Import our custom modules (CPU version)
-from glycan_dataloader_cpu import GlycanProteinDataLoader, create_glycan_dataloaders
-from Integrated_Embedder import GlycanProteinPairEmbedder
-from binding_strength_networks import BindingStrengthNetworkFactory
+from dataloader.glycan_dataloader_cpu import GlycanProteinDataLoader, create_glycan_dataloaders
+from embedder.Integrated_Embedder import GlycanProteinPairEmbedder
+from network.binding_strength_networks import BindingStrengthNetworkFactory
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -180,7 +180,10 @@ class PyTorchBindingPredictor:
         pbar = tqdm(dataloader, desc="Training", leave=False)
 
         for batch_idx, (embeddings, targets) in enumerate(pbar):
-            # Data is transferred from CPU to GPU on demand
+            # Transfer data from CPU to GPU (DataLoader returns CPU tensors)
+            embeddings = embeddings.to(self.device)
+            targets = targets.to(self.device)
+
             self.optimizer.zero_grad()
 
             # Forward pass
@@ -213,6 +216,10 @@ class PyTorchBindingPredictor:
 
         with torch.no_grad():
             for embeddings, targets in tqdm(dataloader, desc="Validation", leave=False):
+                # Transfer data from CPU to GPU
+                embeddings = embeddings.to(self.device)
+                targets = targets.to(self.device)
+
                 outputs = self.model(embeddings).squeeze()
                 loss = self.criterion(outputs, targets)
 
@@ -240,6 +247,10 @@ class PyTorchBindingPredictor:
 
         with torch.no_grad():
             for embeddings, targets in tqdm(dataloader, desc="Evaluating", leave=False):
+                # Transfer data from CPU to GPU
+                embeddings = embeddings.to(self.device)
+                targets = targets.to(self.device)
+
                 outputs = self.model(embeddings).squeeze()
                 all_preds.extend(outputs.cpu().numpy())
                 all_targets.extend(targets.cpu().numpy())
@@ -265,6 +276,9 @@ class PyTorchBindingPredictor:
 
         with torch.no_grad():
             for embeddings, _ in tqdm(dataloader, desc="Predicting", leave=False):
+                # Transfer data from CPU to GPU
+                embeddings = embeddings.to(self.device)
+
                 outputs = self.model(embeddings).squeeze()
                 predictions.extend(outputs.cpu().numpy())
 
@@ -286,8 +300,8 @@ def run_pytorch_pipeline():
     print("=" * 60)
 
     # Configuration for CPU-based operation
-    data_path = "data/v12_glycan_binding.csv"
-    vocab_path = "GlycanEmbedder_Package/glycoword_vocab.pkl"
+    data_path = "../data/v12_glycan_binding.csv"
+    vocab_path = "../embedder/GlycanEmbedder_Package/glycoword_vocab.pkl"
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # CPU-safe settings
@@ -306,7 +320,7 @@ def run_pytorch_pipeline():
         logger.info("Initializing embedder...")
         embedder = GlycanProteinPairEmbedder(
             protein_model="650M",
-            protein_model_dir="resources/esm-model-weights",
+            protein_model_dir="../resources/esm-model-weights",
             glycan_method="lstm",
             glycan_vocab_path=vocab_path,
             fusion_method="concat",
@@ -477,7 +491,7 @@ def test_cpu_dataloader():
         start_time = time.time()
 
         dataloaders = create_glycan_dataloaders(
-            data_path="data/v12_glycan_binding.csv",
+            data_path="../data/v12_glycan_binding.csv",
             embedder=embedder,
             batch_size=64,
             cache_dir="test_cpu_cache",
@@ -494,6 +508,10 @@ def test_cpu_dataloader():
 
         iteration_start = time.time()
         for batch_idx, (embeddings, targets) in enumerate(train_loader):
+            # Transfer data from CPU to GPU for testing
+            embeddings = embeddings.to("cuda" if torch.cuda.is_available() else "cpu")
+            targets = targets.to("cuda" if torch.cuda.is_available() else "cpu")
+
             print(f"Batch {batch_idx}: {embeddings.shape}, {targets.shape}")
             print(f"  Devices: {embeddings.device}, {targets.device}")
             if torch.cuda.is_available():
@@ -507,7 +525,7 @@ def test_cpu_dataloader():
 
         # Show cache info
         temp_loader = GlycanProteinDataLoader(
-            data_path="data/v12_glycan_binding.csv",
+            data_path="../data/v12_glycan_binding.csv",
             embedder=embedder,
             cache_dir="test_cpu_cache"
         )
@@ -526,7 +544,7 @@ def clear_cache():
     """Utility function to clear embedding cache"""
     cache_dir = "cpu_embedding_cache"
     temp_loader = GlycanProteinDataLoader(
-        data_path="data/v12_glycan_binding.csv",
+        data_path="../data/v12_glycan_binding.csv",
         embedder=None,  # Won't be used for cache operations
         cache_dir=cache_dir
     )

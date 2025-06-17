@@ -8,19 +8,17 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset, random_split
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple, Optional, Union, Callable
+from typing import Dict, List, Tuple, Optional, Union
 import logging
 from pathlib import Path
 import json
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
-import seaborn as sns
-from tqdm import tqdm
 
 # Import custom modules
-from Integrated_Embedder import GlycanProteinPairEmbedder
-from binding_strength_networks import BindingStrengthNetworkFactory
+from embedder.Integrated_Embedder import GlycanProteinPairEmbedder
+from network.binding_strength_networks import BindingStrengthNetworkFactory
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -514,7 +512,7 @@ def load_data_from_file(file_path: str) -> Tuple[List[Tuple[str, str]], List[flo
 
 if __name__ == "__main__":
     # Example usage
-    vocab_path = "GlycanEmbedder_Package/glycoword_vocab.pkl"
+    vocab_path = "../embedder/GlycanEmbedder_Package/glycoword_vocab.pkl"
 
     # Example pairs and binding strengths (dummy data)
     pairs = [
@@ -534,7 +532,7 @@ if __name__ == "__main__":
     print("Example 1: Training MLP predictor")
     predictor = BindingStrengthPredictor(
         protein_model="650M",
-        protein_model_dir="resources/esm-model-weights",
+        protein_model_dir="../resources/esm-model-weights",
         glycan_method="lstm",
         glycan_vocab_path=vocab_path,
         fusion_method="concat",

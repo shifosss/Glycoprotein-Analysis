@@ -379,7 +379,7 @@ if __name__ == "__main__":
     embeddings_650m = embed_proteins(
         sequences,
         model="650M",
-        model_dir="resources/esm-model-weights"  # Custom model directory
+        model_dir="../resources/esm-model-weights"  # Custom model directory
     )
     print(f"Embeddings shape: {embeddings_650m.shape}")
     print(f"First sequence embedding (first 10 dims): {embeddings_650m[0, :10]}")

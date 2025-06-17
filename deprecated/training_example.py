@@ -8,12 +8,11 @@ import torch.optim as optim
 import numpy as np
 from typing import Dict, Optional
 import logging
-from tqdm import tqdm
 
 # Import our custom modules
-from glycan_dataloader import GlycanProteinDataLoader, create_glycan_dataloaders
-from Integrated_Embedder import GlycanProteinPairEmbedder
-from binding_strength_networks import BindingStrengthNetworkFactory
+from dataloader.glycan_dataloader import create_glycan_dataloaders
+from embedder.Integrated_Embedder import GlycanProteinPairEmbedder
+from network.binding_strength_networks import BindingStrengthNetworkFactory
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -267,8 +266,8 @@ def run_pytorch_pipeline():
     print("=" * 60)
 
     # Configuration
-    data_path = "data/v12_glycan_binding.csv"
-    vocab_path = "GlycanEmbedder_Package/glycoword_vocab.pkl"
+    data_path = "../data/v12_glycan_binding.csv"
+    vocab_path = "../embedder/GlycanEmbedder_Package/glycoword_vocab.pkl"
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     try:
@@ -401,7 +400,7 @@ def test_dataloader_only():
 
         # Test DataLoader creation
         dataloaders = create_glycan_dataloaders(
-            data_path="data/v12_glycan_binding.csv",
+            data_path="../data/v12_glycan_binding.csv",
             embedder=embedder,
             batch_size=16,
             max_pairs=100

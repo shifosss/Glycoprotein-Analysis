@@ -12,13 +12,12 @@ from tqdm import tqdm
 import time
 
 # Import our custom modules
-from glycan_dataloader import GlycanProteinDataLoader, create_glycan_dataloaders
-from Integrated_Embedder import GlycanProteinPairEmbedder
-from binding_strength_networks import BindingStrengthNetworkFactory
+from dataloader.glycan_dataloader import GlycanProteinDataLoader, create_glycan_dataloaders
+from embedder.Integrated_Embedder import GlycanProteinPairEmbedder
+from network.binding_strength_networks import BindingStrengthNetworkFactory
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 class PyTorchBindingPredictor:
     """
@@ -30,7 +29,7 @@ class PyTorchBindingPredictor:
                  embedder: GlycanProteinPairEmbedder,
                  network_type: str = "mlp",
                  network_config: Optional[Dict] = None,
-                 device: Optional[str] = None):
+                 device: Optional[str] = 'mps'):
         """
         Initialize the predictor
 
@@ -100,9 +99,9 @@ class PyTorchBindingPredictor:
             weight_decay=weight_decay
         )
 
-        # Initialize scheduler
+        # Initialize scheduler (verbose=True removed)
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, patience=patience // 2, factor=0.5, verbose=True
+            self.optimizer, patience=patience // 2, factor=0.5
         )
 
         # Training loop
@@ -285,15 +284,16 @@ def run_pytorch_pipeline():
     print("=" * 60)
 
     # Configuration optimized for V100-32G (32GB GPU memory)
-    data_path = "data/v12_glycan_binding.csv"
-    vocab_path = "GlycanEmbedder_Package/glycoword_vocab.pkl"
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    data_path = "../data/v12_glycan_binding.csv"
+    vocab_path = "../embedder/GlycanEmbedder_Package/glycoword_vocab.pkl"
+    # device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = 'mps'
 
     # V100-32G optimized settings
-    gpu_memory_limit = 128  # ~10GB for embeddings (plenty of room for model)
+    gpu_memory_limit = 256  # ~10GB for embeddings (plenty of room for model)
     batch_size = 16  # Large batches for V100
-    embedding_batch_size = 16  # Fast embedding computation
-    cache_dir = "v100_embedding_cache"
+    embedding_batch_size = 8  # Fast embedding computation
+    cache_dir = "../embedding_cache"
 
     logger.info(f"Using device: {device}")
     if torch.cuda.is_available():
@@ -306,7 +306,7 @@ def run_pytorch_pipeline():
         logger.info("Initializing embedder...")
         embedder = GlycanProteinPairEmbedder(
             protein_model="650M",  # Can use "3B" if you want larger model
-            protein_model_dir="resources/esm-model-weights",
+            protein_model_dir="../resources/esm-model-weights",
             glycan_method="lstm",  # Try "gcn" or "bert" for different methods
             glycan_vocab_path=vocab_path,
             fusion_method="concat",  # Try "attention" for more sophisticated fusion
@@ -333,7 +333,7 @@ def run_pytorch_pipeline():
             embedding_batch_size=embedding_batch_size,
 
             # For testing, limit pairs (remove for full dataset)
-            max_pairs=300  # Remove this line for full dataset
+            max_pairs=500  # Remove this line for full dataset
         )
 
         setup_time = time.time() - start_time
@@ -359,8 +359,8 @@ def run_pytorch_pipeline():
             embedder=embedder,
             network_type="mlp",
             network_config={
-                "hidden_dims": [1024, 512, 256, 128],  # Larger network for V100
-                "dropout": 0.3,
+                "hidden_dims": [512, 256, 128],  # Larger network for V100
+                "dropout": 0.2,
                 "activation": "relu",
                 "batch_norm": True  # Add batch norm for stability
             },
@@ -371,7 +371,7 @@ def run_pytorch_pipeline():
         logger.info("Training model...")
         history = predictor.train(
             dataloaders=dataloaders,
-            num_epochs=50,  # More epochs for V100
+            num_epochs=30,  # More epochs for V100
             learning_rate=2e-3,  # Slightly higher LR for larger batches
             weight_decay=1e-4,
             patience=15  # More patience for larger dataset
@@ -483,7 +483,7 @@ def test_v100_dataloader():
         start_time = time.time()
 
         dataloaders = create_glycan_dataloaders(
-            data_path="data/v12_glycan_binding.csv",
+            data_path="../data/v12_glycan_binding.csv",
             embedder=embedder,
             batch_size=128,  # Large batch for V100
             gpu_memory_limit=2048,  # 2048 embeddings ~5GB
@@ -513,7 +513,7 @@ def test_v100_dataloader():
 
         # Show cache info
         temp_loader = GlycanProteinDataLoader(
-            data_path="data/v12_glycan_binding.csv",
+            data_path="../data/v12_glycan_binding.csv",
             embedder=embedder,
             cache_dir="test_v100_cache"
         )
@@ -532,7 +532,7 @@ def clear_cache():
     """Utility function to clear embedding cache"""
     cache_dir = "v100_embedding_cache"
     temp_loader = GlycanProteinDataLoader(
-        data_path="data/v12_glycan_binding.csv",
+        data_path="../data/v12_glycan_binding.csv",
         embedder=None,  # Won't be used for cache operations
         cache_dir=cache_dir
     )

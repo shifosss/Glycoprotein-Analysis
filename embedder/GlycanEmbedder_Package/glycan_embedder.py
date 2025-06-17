@@ -1,13 +1,13 @@
 import re
 import os
 import pickle as pkl
-from typing import List, Union, Optional, Dict, Any, Sequence
+from typing import List, Optional, Dict, Sequence
 import numpy as np
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from torch_scatter import scatter_mean, scatter_add, scatter_max
+from torch_scatter import scatter_mean
 
 try:
     from glycowork.motif import tokenization
@@ -18,7 +18,7 @@ except ImportError:
     print("Warning: glycowork not available. Some features may be limited.")
 
 # Import readout classes
-from GlycanEmbedder_Package.readout import MeanReadout, SumReadout, MaxReadout, AttentionReadout
+from embedder.GlycanEmbedder_Package.readout import MeanReadout, SumReadout, MaxReadout, AttentionReadout
 
 
 # ============================================================================
@@ -1518,6 +1518,6 @@ if __name__ == "__main__":
 
     # Test different embedding methods
     for method in ['gcn', 'lstm', 'cnn', 'bert', 'rgcn', 'compgcn', 'mpnn']:
-        embeds = embed_glycans(glycans, method=method, embedding_dim=512, 
+        embeds = embed_glycans(glycans, method=method, embedding_dim=512,
                                vocab_path="glycoword_vocab.pkl", device="cuda")
         print(f"{method.upper()} embeddings shape: {embeds.shape}")

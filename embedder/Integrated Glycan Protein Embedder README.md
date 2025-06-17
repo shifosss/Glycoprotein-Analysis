@@ -54,7 +54,7 @@ from glycan_protein_embedder import GlycanProteinPairEmbedder
 # Create embedder
 embedder = GlycanProteinPairEmbedder(
     protein_model="650M",  # or "3B"
-    protein_model_dir="resources/esm-model-weights",
+    protein_model_dir="../resources/esm-model-weights",
     glycan_method="lstm",  # or gcn, bert, etc.
     glycan_vocab_path="path/to/vocab.pkl",  # optional
     fusion_method="concat",  # or "attention"

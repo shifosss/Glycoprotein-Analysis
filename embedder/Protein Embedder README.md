@@ -34,7 +34,7 @@ sequences = [
     "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG",
     "KALTARQQEVFDLIRDHISQTGMPPTRAEIAQRLGFRSPNAAEEHLKALARKGVIEIVSGASRGIRLLQEE"
 ]
-embeddings = embed_proteins(sequences, model_dir="resources/esm-model-weights")
+embeddings = embed_proteins(sequences, model_dir="../resources/esm-model-weights")
 print(f"Embeddings shape: {embeddings.shape}")  # (2, 1280) for 650M model
 ```
 
