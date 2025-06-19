@@ -1,6 +1,6 @@
 """
 Protein Sequence Embedder using ESM-2 models
-MEMORY OPTIMIZED VERSION - Prevents GPU memory accumulation
+Simplified version - truncation handled upstream
 """
 import os
 import torch
@@ -10,9 +10,6 @@ from typing import List, Union, Optional
 import logging
 from pathlib import Path
 import urllib.request
-import re
-from torchdrug.transforms import TruncateProtein
-from torchdrug.data import Protein
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -42,8 +39,7 @@ class ProteinEmbedder(ABC):
 
 
 class ESM2Embedder(ProteinEmbedder):
-    """ESM-2 model embedder for protein sequences
-    MEMORY OPTIMIZED VERSION - Prevents GPU memory accumulation during embedding"""
+    """ESM-2 model embedder for protein sequences"""
 
     MODELS = {
         "esm2_t33_650M_UR50D": {
@@ -60,9 +56,6 @@ class ESM2Embedder(ProteinEmbedder):
         }
     }
 
-    # Valid amino acid characters recognized by ESM models
-    VALID_AA_CHARS = set('AFCUDNEQGHLIKOMPRSTVWY') # 'X' removed since rdkit cannot handle it
-
     def __init__(self, model_name: str = "650M", model_dir: str = "./models",
                  device: Optional[str] = None, repr_layer: int = -1):
         """
@@ -76,7 +69,6 @@ class ESM2Embedder(ProteinEmbedder):
         """
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(exist_ok=True)
-        self.truncate_transform = TruncateProtein(max_length=1022, random=False)
 
         # Create checkpoints subdirectory (where ESM expects models)
         self.checkpoints_dir = self.model_dir / "checkpoints"
@@ -106,78 +98,8 @@ class ESM2Embedder(ProteinEmbedder):
         # Load model
         self._load_model()
 
-    def _truncate(self, sequence: str) -> str:
-        # Truncate protein sequences longer than 1022 residues (required by ESM models)
-        protein = Protein.from_sequence(sequence)
-        sample = {"graph": protein}
-        truncate_transform = TruncateProtein(max_length=1022, random=False)
-        sample_truncated = truncate_transform(sample)
-        protein_truncated = sample_truncated["graph"]
-        sequence = protein_truncated.to_sequence()
-        return sequence
-
-    def _clean_protein_sequence(self, sequence: str) -> str:
-        """
-        Clean protein sequence by replacing unrecognized characters with glycine (G)
-
-        Args:
-            sequence: Raw protein sequence
-
-        Returns:
-            str: Cleaned sequence with only valid amino acid characters
-        """
-        if not sequence:
-            return sequence
-
-        # Convert to uppercase
-        sequence = sequence.upper()
-
-        # Find unrecognized characters
-        unrecognized_chars = set(sequence) - self.VALID_AA_CHARS
-
-        if unrecognized_chars:
-            logger.warning(f"Found unrecognized characters in sequence: {unrecognized_chars}")
-            logger.warning(f"Replacing with glycine (G): {', '.join(sorted(unrecognized_chars))}")
-
-            # Replace each unrecognized character with G
-            cleaned_sequence = sequence
-            for char in unrecognized_chars:
-                cleaned_sequence = cleaned_sequence.replace(char, 'G')
-
-            # Truncate
-            short_cleaned_sequence = self._truncate(cleaned_sequence)
-
-            return short_cleaned_sequence
-
-        else:
-            short_seq = self._truncate(sequence)
-
-        return short_seq
-
-    def _clean_sequences(self, sequences: List[str]) -> List[str]:
-        """
-        Clean a list of protein sequences
-
-        Args:
-            sequences: List of raw protein sequences
-
-        Returns:
-            List[str]: List of cleaned sequences
-        """
-        cleaned_sequences = []
-        for i, seq in enumerate(sequences):
-            cleaned_seq = self._clean_protein_sequence(seq)
-            cleaned_sequences.append(cleaned_seq)
-
-            # Log if sequence was modified
-            if cleaned_seq != seq.upper():
-                logger.info(f"Sequence {i} modified: '{seq[:50]}...' -> '{cleaned_seq[:50]}...'")
-
-        return cleaned_sequences
-
     def _download_model(self):
         """Download model if not present"""
-        # ESM expects models in checkpoints subdirectory
         model_path = self.checkpoints_dir / f"{self.model_key}.pt"
 
         if model_path.exists():
@@ -216,7 +138,6 @@ class ESM2Embedder(ProteinEmbedder):
 
     def _load_model(self):
         """Load the ESM model"""
-        # Ensure model is downloaded
         model_path = self._download_model()
 
         try:
@@ -230,11 +151,9 @@ class ESM2Embedder(ProteinEmbedder):
 
         try:
             # Temporarily set hub dir to our model dir
-            # This tells ESM where to look for the model
             torch.hub.set_dir(str(self.model_dir))
 
-            # Now load_model_and_alphabet will find our downloaded file
-            # without trying to download it again
+            # Load model
             logger.info(f"Loading model architecture and weights from {model_path}...")
             model, alphabet = esm.pretrained.load_model_and_alphabet(self.model_key)
 
@@ -255,8 +174,7 @@ class ESM2Embedder(ProteinEmbedder):
 
     def embed(self, sequences: Union[str, List[str]]) -> np.ndarray:
         """
-        Embed protein sequences
-        MEMORY OPTIMIZED VERSION - Prevents GPU memory accumulation
+        Embed protein sequences (simplified - assumes sequences are pre-truncated)
 
         Args:
             sequences: Single sequence or list of sequences
@@ -267,53 +185,27 @@ class ESM2Embedder(ProteinEmbedder):
         if isinstance(sequences, str):
             sequences = [sequences]
 
-        # Clean sequences to remove unrecognized characters
-        logger.debug(f"Cleaning {len(sequences)} sequences...")
-        cleaned_sequences = self._clean_sequences(sequences)
-
         # Prepare batch
-        data = [(f"seq_{i}", seq) for i, seq in enumerate(cleaned_sequences)]
+        data = [(f"seq_{i}", seq) for i, seq in enumerate(sequences)]
         batch_labels, batch_strs, batch_tokens = self.batch_converter(data)
         batch_tokens = batch_tokens.to(self.device)
 
-        # Get embeddings with memory optimization
+        # Get embeddings
         with torch.no_grad():
-            # 🔧 MEMORY FIX 1: ESM模型计算
             results = self.model(batch_tokens, repr_layers=[self.repr_layer],
                                return_contacts=False)
             embeddings = results["representations"][self.repr_layer]
 
-            # 🔧 MEMORY FIX 2: 立即清理results以释放GPU内存
-            del results
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
             # Average over sequence length (excluding special tokens)
             sequence_embeddings = []
             for i, (_, seq) in enumerate(data):
-                # Get sequence length (excluding BOS/EOS tokens)
                 seq_len = len(seq)
                 # Extract embeddings for actual sequence (position 1 to seq_len+1)
                 seq_embedding = embeddings[i, 1:seq_len+1].mean(0)
                 sequence_embeddings.append(seq_embedding)
 
             embeddings_tensor = torch.stack(sequence_embeddings)
-
-            # 🔧 MEMORY FIX 3: 清理中间变量
-            del embeddings, sequence_embeddings
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            # 🔧 MEMORY FIX 4: 立即转换为CPU numpy并清理GPU tensor
             result_numpy = embeddings_tensor.cpu().numpy()
-            del embeddings_tensor
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-        # 🔧 MEMORY FIX 5: 清理batch tokens
-        del batch_tokens
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
 
         return result_numpy
 
@@ -366,7 +258,6 @@ def embed_proteins(sequences: Union[str, List[str]],
                   **kwargs) -> np.ndarray:
     """
     Convenience function to embed protein sequences
-    MEMORY OPTIMIZED VERSION
 
     Args:
         sequences: Protein sequence(s) to embed
@@ -386,24 +277,18 @@ def embed_proteins(sequences: Union[str, List[str]],
 
 
 if __name__ == "__main__":
-    # Example usage with sequences containing unrecognized characters
+    # Example usage
     sequences = [
         "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG",
-        "KAL*ARQQEVFDLIRDHISQTGMPPTRAEIAQRLGFRSPNAAEEHLKALARKGVIEIVSGASRGIRLLQEE",  # Contains *
-        "SEQUENCE[WITH]BRACKETS*AND*STARS",  # Contains [], *
+        "KALARQQEVFDLIRDHISQTGMPPTRAEIAQRLGFRSPNAAEEHLKALARKGVIEIVSGASRGIRLLQEE",
     ]
 
-    # Using 650M model with custom model directory
-    print("Using ESM-2 650M model with sequence cleaning (Memory Optimized):")
+    # Using 650M model
+    print("Using ESM-2 650M model:")
     embeddings_650m = embed_proteins(
         sequences,
         model="650M",
-        model_dir="../resources/esm-model-weights"  # Custom model directory
+        model_dir="../resources/esm-model-weights"
     )
     print(f"Embeddings shape: {embeddings_650m.shape}")
     print(f"First sequence embedding (first 10 dims): {embeddings_650m[0, :10]}")
-
-    # Using 3B model (uncomment to test - requires more memory)
-    # print("\nUsing ESM-2 3B model:")
-    # embeddings_3b = embed_proteins(sequences, model="3B", model_dir="resources/esm-model-weights")
-    # print(f"Embeddings shape: {embeddings_3b.shape}")

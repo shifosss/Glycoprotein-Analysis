@@ -18,26 +18,26 @@ except ImportError:
     print("Warning: glycowork not available. Some features may be limited.")
 
 # Import readout classes
-from embedder.GlycanEmbedder_Package.readout import MeanReadout, SumReadout, MaxReadout, AttentionReadout
-
+from GlycanEmbedder_Package.readout import MeanReadout, SumReadout, MaxReadout, AttentionReadout
 
 # ============================================================================
 # Utility Functions
 # ============================================================================
 
 activation_map = {
-                        'relu': 'ReLU',
-                        'gelu': 'GELU', 
-                        'tanh': 'Tanh',
-                        'sigmoid': 'Sigmoid',
-                        'leakyrelu': 'LeakyReLU'
-                    }
+    'relu': 'ReLU',
+    'gelu': 'GELU',
+    'tanh': 'Tanh',
+    'sigmoid': 'Sigmoid',
+    'leakyrelu': 'LeakyReLU'
+}
+
 
 def variadic_to_padded(input_tensor, sizes, padding_value=0):
     """Convert variadic tensor to padded tensor."""
     max_size = sizes.max().item()
     batch_size = len(sizes)
-    
+
     # Handle both 1D and 2D+ tensors
     if input_tensor.dim() == 1:
         # For 1D tensors (token IDs), create 2D output
@@ -1018,8 +1018,8 @@ class GlycanLSTM(BaseGlycanEmbedder):
         max_length (int, optional): maximum sequence length
     """
 
-    def __init__(self, input_dim=21, hidden_dim=640, glycoword_dim=216, num_layers=2, activation='tanh',
-                 layer_norm=False, dropout=0, bidirectional=True, max_length=512):
+    def __init__(self, input_dim=21, hidden_dim=640, glycoword_dim=216, num_layers=3, activation='tanh',
+                 layer_norm=False, dropout=0.1, bidirectional=True, max_length=512):
         super().__init__()
 
         self.input_dim = input_dim
@@ -1085,7 +1085,8 @@ class GlycanLSTM(BaseGlycanEmbedder):
             hidden = hidden.view(self.num_layers, 2, graph.batch_size, self.hidden_dim)
             # Concatenate forward and backward final states from each layer
             hidden = hidden.permute(2, 0, 1, 3)  # (batch, num_layers, 2, hidden_dim)
-            hidden = hidden.reshape(graph.batch_size, self.num_layers * 2, self.hidden_dim)  # (batch, 2*num_layers, hidden_dim)
+            hidden = hidden.reshape(graph.batch_size, self.num_layers * 2,
+                                    self.hidden_dim)  # (batch, 2*num_layers, hidden_dim)
         else:
             # For unidirectional: (num_layers, batch, hidden_dim) -> (batch, num_layers, hidden_dim)
             hidden = hidden.permute(1, 0, 2)
@@ -1097,7 +1098,7 @@ class GlycanLSTM(BaseGlycanEmbedder):
         hidden_pooled = hidden.mean(dim=-1)  # (batch, num_layers[*2])
         layer_weights = self.reweight(hidden_pooled)  # (batch, 1)
         layer_weights = torch.softmax(layer_weights, dim=0)  # Normalize across batch
-        
+
         # Get weighted sum of all layers' final hidden states
         graph_feature = (hidden * layer_weights.unsqueeze(-1)).sum(dim=1)  # (batch, hidden_dim)
         graph_feature = self.linear(graph_feature)
@@ -1371,7 +1372,7 @@ class GlycanEmbedder:
                 # Find the largest divisor of embedding_dim that's <= 12
                 valid_heads = [h for h in [1, 2, 3, 4, 6, 8, 12] if embedding_dim % h == 0]
                 num_heads = max(valid_heads) if valid_heads else 1
-                
+
                 params = {
                     'input_dim': len(self.glycowords),
                     'hidden_dim': embedding_dim,

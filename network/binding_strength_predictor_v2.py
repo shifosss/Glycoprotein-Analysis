@@ -9,19 +9,22 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional, Union, Callable
 import logging
 from pathlib import Path
 import json
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
+import seaborn as sns
 from tqdm import tqdm
 import time
 
 # Import enhanced modules
-from dataloader.glycan_dataloader_cpu_v2 import EnhancedGlycanProteinDataLoader, create_enhanced_glycan_dataloaders
-from network.binding_strength_networks import BindingStrengthNetworkFactory
+from glycan_dataloader_cpu_v2 import EnhancedGlycanProteinDataLoader, create_enhanced_glycan_dataloaders
+from binding_strength_networks import BindingStrengthNetworkFactory
+from embedding_preprocessor import EmbeddingPreprocessor, preprocess_embeddings
+from clustering_splitter import ProteinClusteringSplitter, create_clustered_splits
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -137,9 +140,9 @@ class EnhancedBindingStrengthPredictor:
         logger.info(f"Features: precomputed={use_precomputed}, clustering={use_clustering}")
 
     def setup_preprocessing(self,
-                            data_path: str,
-                            force_recompute: bool = False,
-                            **kwargs):
+                           data_path: str,
+                           force_recompute: bool = False,
+                           **kwargs):
         """
         Setup preprocessing components (embeddings and clustering)
 
@@ -349,8 +352,13 @@ class EnhancedBindingStrengthPredictor:
                 patience_counter += 1
 
             # Log progress
-            if epoch % 10 == 0 or epoch == num_epochs - 1:
-                logger.info(
+            # if epoch % 3 == 0 or epoch == num_epochs - 1: # Print every 3 epochs
+            #     logger.info(
+            #         f"Epoch {epoch:3d}: "
+            #         f"Train Loss={train_loss:.4f}, Val Loss={val_loss:.4f}, "
+            #         f"Train R²={train_metrics['r2']:.4f}, Val R²={val_metrics['r2']:.4f}"
+            #     )
+            logger.info(
                     f"Epoch {epoch:3d}: "
                     f"Train Loss={train_loss:.4f}, Val Loss={val_loss:.4f}, "
                     f"Train R²={train_metrics['r2']:.4f}, Val R²={val_metrics['r2']:.4f}"
@@ -381,7 +389,8 @@ class EnhancedBindingStrengthPredictor:
         all_targets = []
 
         for batch_x, batch_y in tqdm(data_loader, desc="Training", leave=False):
-            batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+            # Explicitly transfer data from CPU to GPU
+            batch_x, batch_y = batch_x.to(self.device, non_blocking=True), batch_y.to(self.device, non_blocking=True)
 
             # Forward pass
             self.optimizer.zero_grad()
@@ -411,7 +420,8 @@ class EnhancedBindingStrengthPredictor:
 
         with torch.no_grad():
             for batch_x, batch_y in tqdm(data_loader, desc="Validation", leave=False):
-                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                # Explicitly transfer data from CPU to GPU
+                batch_x, batch_y = batch_x.to(self.device, non_blocking=True), batch_y.to(self.device, non_blocking=True)
 
                 outputs = self.model(batch_x).squeeze()
                 loss = self.criterion(outputs, batch_y)
@@ -473,7 +483,7 @@ class EnhancedBindingStrengthPredictor:
 
     def _predict_original(self, pairs, batch_size, return_numpy):
         """Original prediction method using embedder"""
-        from embedder.Integrated_Embedder import GlycanProteinPairEmbedder
+        from Integrated_Embedder import GlycanProteinPairEmbedder
 
         # Initialize embedder if needed
         embedder = GlycanProteinPairEmbedder(
@@ -496,7 +506,7 @@ class EnhancedBindingStrengthPredictor:
 
         with torch.no_grad():
             for i in range(0, len(embeddings), batch_size):
-                batch = embeddings[i:i + batch_size].to(self.device)
+                batch = embeddings[i:i+batch_size].to(self.device)
                 pred = self.model(batch).squeeze()
                 predictions.append(pred)
 
@@ -578,8 +588,8 @@ class EnhancedBindingStrengthPredictor:
         # Convert metrics to text
         metrics_text = "\n".join([f"{k}: {v}" for k, v in final_metrics.items()])
         axes[1, 1].text(0.1, 0.5, metrics_text, transform=axes[1, 1].transAxes,
-                        fontsize=12, verticalalignment='center',
-                        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgreen", alpha=0.7))
+                       fontsize=12, verticalalignment='center',
+                       bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgreen", alpha=0.7))
         axes[1, 1].set_title('Training Summary')
         axes[1, 1].axis('off')
 
@@ -597,8 +607,8 @@ Fusion: {self.fusion_method}
 Device: {self.device}"""
 
         axes[1, 2].text(0.1, 0.5, features_text, transform=axes[1, 2].transAxes,
-                        fontsize=10, verticalalignment='center',
-                        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.7))
+                       fontsize=10, verticalalignment='center',
+                       bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.7))
         axes[1, 2].set_title('Enhancement Features')
         axes[1, 2].axis('off')
 
@@ -702,7 +712,7 @@ def load_data_from_file(file_path: str) -> Tuple[List[Tuple[str, str]], List[flo
 if __name__ == "__main__":
     # Example usage comparing original vs enhanced predictor
     vocab_path = "GlycanEmbedder_Package/glycoword_vocab.pkl"
-    data_path = "../data/v12_glycan_binding.csv"
+    data_path = "data/v12_glycan_binding.csv"
 
     print("Enhanced Binding Strength Predictor Example")
     print("=" * 50)
@@ -711,7 +721,7 @@ if __name__ == "__main__":
         # Initialize enhanced predictor
         predictor = EnhancedBindingStrengthPredictor(
             protein_model="650M",
-            protein_model_dir="../resources/esm-model-weights",
+            protein_model_dir="resources/esm-model-weights",
             glycan_method="lstm",
             glycan_vocab_path=vocab_path,
             fusion_method="concat",
@@ -769,5 +779,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Error in enhanced predictor example: {e}")
         import traceback
-
         traceback.print_exc()
