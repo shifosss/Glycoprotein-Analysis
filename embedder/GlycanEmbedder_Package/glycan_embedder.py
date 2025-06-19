@@ -18,7 +18,7 @@ except ImportError:
     print("Warning: glycowork not available. Some features may be limited.")
 
 # Import readout classes
-from GlycanEmbedder_Package.readout import MeanReadout, SumReadout, MaxReadout, AttentionReadout
+from readout import MeanReadout, SumReadout, MaxReadout, AttentionReadout
 
 # ============================================================================
 # Utility Functions

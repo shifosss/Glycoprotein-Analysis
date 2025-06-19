@@ -21,10 +21,10 @@ from tqdm import tqdm
 import time
 
 # Import enhanced modules
-from glycan_dataloader_cpu_v2 import EnhancedGlycanProteinDataLoader, create_enhanced_glycan_dataloaders
-from binding_strength_networks import BindingStrengthNetworkFactory
-from embedding_preprocessor import EmbeddingPreprocessor, preprocess_embeddings
-from clustering_splitter import ProteinClusteringSplitter, create_clustered_splits
+from dataloader.glycan_dataloader_cpu_v2 import EnhancedGlycanProteinDataLoader, create_enhanced_glycan_dataloaders
+from network.binding_strength_networks import BindingStrengthNetworkFactory
+from preprocessing.embedding_preprocessor import EmbeddingPreprocessor, preprocess_embeddings
+from preprocessing.clustering_splitter import ProteinClusteringSplitter, create_clustered_splits
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -483,7 +483,7 @@ class EnhancedBindingStrengthPredictor:
 
     def _predict_original(self, pairs, batch_size, return_numpy):
         """Original prediction method using embedder"""
-        from Integrated_Embedder import GlycanProteinPairEmbedder
+        from embedder.Integrated_Embedder import GlycanProteinPairEmbedder
 
         # Initialize embedder if needed
         embedder = GlycanProteinPairEmbedder(

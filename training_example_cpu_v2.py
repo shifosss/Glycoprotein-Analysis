@@ -14,11 +14,11 @@ import time
 import matplotlib.pyplot as plt
 
 # Import enhanced modules
-from glycan_dataloader_cpu_v2 import EnhancedGlycanProteinDataLoader, create_enhanced_glycan_dataloaders
-from Integrated_Embedder import GlycanProteinPairEmbedder
-from binding_strength_networks import BindingStrengthNetworkFactory
-from embedding_preprocessor import EmbeddingPreprocessor
-from clustering_splitter import ProteinClusteringSplitter
+from dataloader.glycan_dataloader_cpu_v2 import EnhancedGlycanProteinDataLoader, create_enhanced_glycan_dataloaders
+from embedder.Integrated_Embedder import GlycanProteinPairEmbedder
+from network.binding_strength_networks import BindingStrengthNetworkFactory
+from preprocessing.embedding_preprocessor import EmbeddingPreprocessor
+from preprocessing.clustering_splitter import ProteinClusteringSplitter
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -548,7 +548,7 @@ def precompute_embeddings_only():
     print("Precomputing Embeddings Only")
     print("=" * 30)
 
-    from embedding_preprocessor import preprocess_embeddings
+    from preprocessing.embedding_preprocessor import preprocess_embeddings
 
     vocab_path = "GlycanEmbedder_Package/glycoword_vocab.pkl"
     data_path = "data/v12_glycan_binding.csv"
