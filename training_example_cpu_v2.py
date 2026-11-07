@@ -202,7 +202,6 @@ class EnhancedPyTorchBindingPredictor:
 
     def _train_epoch(self, dataloader) -> tuple:
         """Train for one epoch with enhanced logging"""
-        self.device = 'cuda'
         self.model.train()
         total_loss = 0.0
         all_preds = []
